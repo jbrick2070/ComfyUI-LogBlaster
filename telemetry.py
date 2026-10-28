@@ -13,7 +13,7 @@ import re
 import sys
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 
 class _NvmlUtilization(ctypes.Structure):
@@ -31,27 +31,54 @@ class _NvmlMemory(ctypes.Structure):
     ]
 
 
-def resolve_nvml_device_index(env: Optional[Dict[str, str]] = None) -> int:
-    """Resolve physical NVML GPU index from LOGBLASTER_NVML_INDEX or CUDA_VISIBLE_DEVICES."""
+def resolve_nvml_target(env: Optional[Mapping[str, str]] = None) -> Tuple[str, Any]:
+    """Classify target NVML GPU selection from LOGBLASTER_NVML_INDEX or CUDA_VISIBLE_DEVICES."""
     src = env if env is not None else os.environ
     explicit = src.get("LOGBLASTER_NVML_INDEX", "").strip()
-    if explicit.isdigit():
-        return int(explicit)
+    if explicit:
+        if re.fullmatch(r"\d+", explicit):
+            return ("explicit_index", int(explicit))
+        if re.match(r"^(?:GPU|MIG)-", explicit, re.IGNORECASE):
+            return ("explicit_uuid", explicit)
+        return ("invalid", -1)
+
     cuda_vis = src.get("CUDA_VISIBLE_DEVICES", "").strip()
     if cuda_vis:
         first_token = cuda_vis.split(",")[0].strip()
         if re.fullmatch(r"\d+", first_token):
-            return int(first_token)
+            return ("cuda_index", int(first_token))
+        if re.match(r"^(?:GPU|MIG)-", first_token, re.IGNORECASE):
+            return ("cuda_uuid", first_token)
+        if first_token.lower() in {"-1", "none", "void"}:
+            return ("disabled", -1)
+
+    return ("default_index", 0)
+
+
+def resolve_nvml_device_index(env: Optional[Mapping[str, str]] = None) -> int:
+    """Resolve integer NVML GPU index (or -1 when explicitly invalid/disabled)."""
+    mode, target = resolve_nvml_target(env)
+    if mode in ("explicit_index", "cuda_index", "default_index"):
+        return int(target)
+    if mode in ("invalid", "disabled"):
+        return -1
     return 0
 
 
 class NvmlReader:
     """Thread-safe lazy NVML reader with short TTL caching."""
 
-    def __init__(self, cache_ttl_sec: float = 0.4, device_index: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        cache_ttl_sec: float = 0.4,
+        device_index: Optional[int] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._cache_ttl = cache_ttl_sec
         self._device_index = device_index
+        self._env = env
+        self._resolved_index: Optional[int] = None
         self._last_ts = 0.0
         self._last_payload: Optional[Dict[str, Any]] = None
         self._initialized = False
@@ -65,6 +92,17 @@ class NvmlReader:
             return True
         if self._failed:
             return False
+
+        if self._device_index is not None:
+            if self._device_index < 0:
+                self._failed = True
+                return False
+            mode, target = ("explicit_index", int(self._device_index))
+        else:
+            mode, target = resolve_nvml_target(self._env)
+            if mode in ("invalid", "disabled"):
+                self._failed = True
+                return False
 
         candidates = (
             ["nvml.dll", r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll"]
@@ -97,19 +135,47 @@ class NvmlReader:
             )
             get_handle.restype = ctypes.c_int
 
-            target_idx = (
-                self._device_index
-                if self._device_index is not None
-                else resolve_nvml_device_index()
-            )
             handle = ctypes.c_void_p()
-            rc = get_handle(ctypes.c_uint(target_idx), ctypes.byref(handle))
-            if rc != 0 and target_idx != 0:
-                handle = ctypes.c_void_p()
-                rc = get_handle(ctypes.c_uint(0), ctypes.byref(handle))
-            if rc != 0:
-                self._failed = True
-                return False
+            resolved_idx: Optional[int] = None
+
+            if mode in ("explicit_uuid", "cuda_uuid"):
+                get_uuid_fn = getattr(lib, "nvmlDeviceGetHandleByUUID", None)
+                rc = -1
+                if get_uuid_fn is not None:
+                    get_uuid_fn.restype = ctypes.c_int
+                    rc = get_uuid_fn(str(target).encode("utf-8"), ctypes.byref(handle))
+                if rc != 0:
+                    if mode == "explicit_uuid":
+                        self._failed = True
+                        return False
+                    handle = ctypes.c_void_p()
+                    rc = get_handle(ctypes.c_uint(0), ctypes.byref(handle))
+                    if rc == 0:
+                        resolved_idx = 0
+                if rc != 0:
+                    self._failed = True
+                    return False
+                get_idx_fn = getattr(lib, "nvmlDeviceGetIndex", None)
+                if resolved_idx is None and get_idx_fn is not None:
+                    get_idx_fn.restype = ctypes.c_int
+                    idx_out = ctypes.c_uint(0)
+                    if get_idx_fn(handle, ctypes.byref(idx_out)) == 0:
+                        resolved_idx = int(idx_out.value)
+            else:
+                target_idx = int(target)
+                rc = get_handle(ctypes.c_uint(target_idx), ctypes.byref(handle))
+                if rc == 0:
+                    resolved_idx = target_idx
+                elif mode != "explicit_index" and target_idx != 0:
+                    # Containerized CUDA_VISIBLE_DEVICES may remap visible device to NVML index 0;
+                    # explicit LOGBLASTER_NVML_INDEX never silently falls back to a different GPU.
+                    handle = ctypes.c_void_p()
+                    rc = get_handle(ctypes.c_uint(0), ctypes.byref(handle))
+                    if rc == 0:
+                        resolved_idx = 0
+                if rc != 0:
+                    self._failed = True
+                    return False
 
             lib.nvmlDeviceGetName.restype = ctypes.c_int
             lib.nvmlDeviceGetUtilizationRates.restype = ctypes.c_int
@@ -123,6 +189,7 @@ class NvmlReader:
 
             self._lib = lib
             self._handle = handle
+            self._resolved_index = resolved_idx if resolved_idx is not None else 0
             self._initialized = True
             return True
         except Exception:
@@ -144,6 +211,7 @@ class NvmlReader:
                     "ok": False,
                     "available": False,
                     "metrics_mode": "unavailable",
+                    "device_index": None,
                     "gpu_name": "Unavailable",
                     "gpu_util": 0,
                     "mem_util": 0,
@@ -192,6 +260,7 @@ class NvmlReader:
                 "ok": True,
                 "available": True,
                 "metrics_mode": "nvml",
+                "device_index": self._resolved_index,
                 "gpu_name": self._gpu_name,
                 "gpu_util": gpu_util,
                 "mem_util": mem_util,

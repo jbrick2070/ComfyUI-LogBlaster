@@ -36,6 +36,7 @@ class LogBlasterStageCue:
             },
             "optional": {
                 "passthrough": (ANY_TYPE,),
+                "always_fire": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -45,11 +46,24 @@ class LogBlasterStageCue:
     OUTPUT_NODE = True
     CATEGORY = "utils/LogBlaster"
 
+    @classmethod
+    def IS_CHANGED(
+        cls,
+        banner: str = "STAGE CHECKPOINT",
+        fx_trigger: str = "SHOCKWAVE",
+        passthrough: Any = None,
+        always_fire: bool = False,
+    ) -> Any:
+        if always_fire:
+            return float("nan")
+        return f"{fx_trigger}:{banner}"
+
     def emit_cue(
         self,
         banner: str = "STAGE CHECKPOINT",
         fx_trigger: str = "SHOCKWAVE",
         passthrough: Any = None,
+        always_fire: bool = False,
     ) -> Tuple[Any]:
         clean_banner = (banner or "STAGE CHECKPOINT").replace("\r", " ").replace("\n", " ").strip()
         clean_fx = (fx_trigger or "SHOCKWAVE").strip().upper()

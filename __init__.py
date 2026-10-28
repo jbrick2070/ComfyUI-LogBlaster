@@ -9,18 +9,19 @@ Arcade Neon) while offloading shader work to the low-power integrated GPU.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import types
 from typing import Any, Dict
 
-try:
+if __package__ not in (None, ""):
     from .nodes import (
         NODE_CLASS_MAPPINGS as _RAW_NODE_CLASS_MAPPINGS,
         NODE_DISPLAY_NAME_MAPPINGS as _RAW_NODE_DISPLAY_NAME_MAPPINGS,
     )
     from .telemetry import get_gpu_telemetry
-except ImportError:
+else:
     from nodes import (  # type: ignore
         NODE_CLASS_MAPPINGS as _RAW_NODE_CLASS_MAPPINGS,
         NODE_DISPLAY_NAME_MAPPINGS as _RAW_NODE_DISPLAY_NAME_MAPPINGS,
@@ -46,6 +47,52 @@ _SAFE_HEADERS = {
     "Cache-Control": "no-store",
 }
 
+_OBSERVED_EXECUTION_EVENTS = frozenset(
+    {
+        "execution_start",
+        "executing",
+        "progress",
+        "execution_error",
+        "execution_success",
+        "execution_interrupted",
+        "execution_cached",
+    }
+)
+
+
+def _read_html_file() -> str:
+    with open(_HTML_PATH, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _install_observer_tap(prompt_server: Any) -> None:
+    """Forward directed workflow execution events to connected logblaster-* observer sockets."""
+    if getattr(prompt_server, "_logblaster_send_sync_wrapped", False):
+        return
+    orig_send_sync = getattr(prompt_server, "send_sync", None)
+    if not callable(orig_send_sync):
+        return
+
+    def _wrapped_send_sync(event: Any, data: Any, sid: Any = None) -> Any:
+        result = orig_send_sync(event, data, sid)
+        if sid is not None and event in _OBSERVED_EXECUTION_EVENTS:
+            sockets = getattr(prompt_server, "sockets", None)
+            if isinstance(sockets, dict) and sockets:
+                for lb_sid in list(sockets.keys()):
+                    if (
+                        isinstance(lb_sid, str)
+                        and lb_sid.startswith("logblaster-")
+                        and lb_sid != sid
+                    ):
+                        try:
+                            orig_send_sync(event, data, lb_sid)
+                        except Exception:
+                            pass
+        return result
+
+    setattr(prompt_server, "send_sync", _wrapped_send_sync)
+    setattr(prompt_server, "_logblaster_send_sync_wrapped", True)
+
 
 def register_routes(prompt_server: Any) -> bool:
     """Attach read-only GET /logblaster and GET /logblaster/telemetry routes idempotently."""
@@ -59,8 +106,7 @@ def register_routes(prompt_server: Any) -> bool:
     @prompt_server.routes.get("/logblaster")
     async def _serve_logblaster_app(request: Any) -> Any:
         try:
-            with open(_HTML_PATH, "r", encoding="utf-8") as fh:
-                html_text = fh.read()
+            html_text = await asyncio.to_thread(_read_html_file)
             return web.Response(
                 text=html_text,
                 content_type="text/html",
@@ -79,9 +125,10 @@ def register_routes(prompt_server: Any) -> bool:
 
     @prompt_server.routes.get("/logblaster/telemetry")
     async def _serve_logblaster_telemetry(request: Any) -> Any:
-        payload = get_gpu_telemetry()
+        payload = await asyncio.to_thread(get_gpu_telemetry)
         return web.json_response(payload, headers=_SAFE_HEADERS)
 
+    _install_observer_tap(prompt_server)
     setattr(prompt_server, "_logblaster_routes_registered", True)
     return True
 
@@ -99,7 +146,7 @@ if not _IS_DUPLICATE_LOAD:
                 if register_routes(PromptServer.instance):
                     print(
                         "[LogBlaster] GPU Shader Log HUD ready at /logblaster "
-                        "(auto-popup extension loaded)"
+                        "(auto-popup extension + execution observer loaded)"
                     )
         except Exception as _route_exc:
             print(f"[LogBlaster] Failed to register HTTP routes: {_route_exc}")

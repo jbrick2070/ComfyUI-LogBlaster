@@ -6,24 +6,43 @@ param(
 
 $ErrorActionPreference = "SilentlyContinue"
 $Url = "http://${HostName}:${Port}/logblaster"
-$QueueUrl = "http://${HostName}:${Port}/queue"
+$PromptUrl = "http://${HostName}:${Port}/prompt"
 $Launcher = Join-Path (Split-Path -Parent $PSScriptRoot) "launch_log_blaster.bat"
 
-Write-Host "[LogBlaster] Watching $QueueUrl for active ComfyUI runs (Ctrl+C to stop)..."
+function Test-LogBlasterWindowOpen {
+    param([string]$TargetUrl)
+    $Procs = Get-CimInstance Win32_Process -Filter "Name='msedge.exe' OR Name='chrome.exe'"
+    foreach ($P in $Procs) {
+        if ($null -ne $P.CommandLine -and $P.CommandLine -like "*$TargetUrl*") {
+            return $true
+        }
+    }
+    return $false
+}
+
+Write-Host "[LogBlaster] Watching $PromptUrl for active ComfyUI runs (Ctrl+C to stop)..."
 $WasRunning = $false
+$WarnedUnreachable = $false
 
 while ($true) {
-    $Resp = Invoke-RestMethod -Uri $QueueUrl -Method Get -TimeoutSec 2
-    if ($null -ne $Resp -and $null -ne $Resp.queue_running) {
-        $RunningCount = @($Resp.queue_running).Count
-        if ($RunningCount -gt 0 -and -not $WasRunning) {
-            Write-Host "[LogBlaster] Active workflow detected! Launching GPU Shader HUD -> $Url"
-            Start-Process -FilePath $Launcher -ArgumentList "$Port", "$HostName"
+    $Resp = Invoke-RestMethod -Uri $PromptUrl -Method Get -TimeoutSec 2
+    if ($null -ne $Resp -and $null -ne $Resp.exec_info) {
+        $WarnedUnreachable = $false
+        $Remaining = [int]($Resp.exec_info.queue_remaining)
+        if ($Remaining -gt 0 -and -not $WasRunning) {
+            if (-not (Test-LogBlasterWindowOpen -TargetUrl $Url)) {
+                Write-Host "[LogBlaster] Active workflow detected (queue_remaining=$Remaining)! Launching GPU Shader HUD -> $Url"
+                Start-Process -FilePath $Launcher -ArgumentList "$Port", "$HostName"
+            }
             $WasRunning = $true
-        } elseif ($RunningCount -eq 0) {
+        } elseif ($Remaining -eq 0) {
             $WasRunning = $false
         }
     } else {
+        if (-not $WarnedUnreachable) {
+            Write-Host "[LogBlaster] Waiting for ComfyUI server at $PromptUrl ..."
+            $WarnedUnreachable = $true
+        }
         $WasRunning = $false
     }
     Start-Sleep -Milliseconds ([int]($PollSeconds * 1000))

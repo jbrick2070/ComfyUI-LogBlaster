@@ -316,8 +316,14 @@
     // Live ComfyUI connection + execution state
     wsConnected: false,
     logSubscribed: false,
+    logSubAttempted: false,
     logStreamAvailable: true,
     warnedNoLogSub: false,
+    backfillInFlight: false,
+    liveLogBuffer: [],
+    lastLogIsoT: "",
+    shuttingDown: false,
+    lifecycleGen: 0,
     clientId: "logblaster-" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)),
     runState: "IDLE",
     runStartMs: 0,
@@ -330,10 +336,12 @@
     stepRateSmooth: 0,
     lastStepMs: 0,
 
-    // Log stream ring buffer
+    // Log stream ring buffer & stateful chunk framing
     lines: [],
     lineCounter: 0,
-    partialCrActive: false,
+    partialLineOpen: false,
+    partialCrPending: false,
+    partialRawText: "",
 
     // Kinetic & GPU reactive uniforms
     charsThisSec: 0,
@@ -380,6 +388,7 @@
       power_w: 0,
     },
     shaderRendererName: "WebGL2 (Adapter Masked)",
+    nvmlUnavailable: false,
     fboReady: false,
     contextLost: false,
     fps: 30,
@@ -528,7 +537,10 @@
     }
   }
 
+  let audioCaptureGen = 0;
+
   function disconnectExternalAudio() {
+    audioCaptureGen++;
     if (externalSourceNode) {
       try { externalSourceNode.disconnect(); } catch (_) {}
       externalSourceNode = null;
@@ -564,14 +576,16 @@
       return;
     }
 
+    const myGen = ++audioCaptureGen;
     try {
       let stream = null;
+      let nextMode = "SYS";
       if (useMic) {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
           video: false,
         });
-        state.audioInMode = "MIC";
+        nextMode = "MIC";
       } else {
         stream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
@@ -583,16 +597,24 @@
           showToast("TIP: Tick 'Also share system audio' in picker (or Shift+Click for Mic)");
           return;
         }
-        state.audioInMode = "SYS";
+        nextMode = "SYS";
       }
 
+      if (myGen !== audioCaptureGen || state.shuttingDown) {
+        stream.getTracks().forEach((tr) => tr.stop());
+        return;
+      }
+
+      state.audioInMode = nextMode;
       externalStream = stream;
       externalSourceNode = audioCtx.createMediaStreamSource(stream);
       // Terminal analyser ONLY -> zero echo / zero feedback!
       externalSourceNode.connect(analyser);
       stream.getAudioTracks()[0].addEventListener("ended", () => {
-        disconnectExternalAudio();
-        syncControlsUI();
+        if (externalStream === stream) {
+          disconnectExternalAudio();
+          syncControlsUI();
+        }
       });
 
       state.audioActive = true;
@@ -600,7 +622,9 @@
       syncControlsUI();
       showToast(`AUDIO REACTIVE LIVE (${state.audioInMode} FFT)`);
     } catch (_) {
-      showToast("AUDIO CAPTURE CANCELLED (Shift+Click AUDIO for Mic, or use SYNTH)");
+      if (myGen === audioCaptureGen) {
+        showToast("AUDIO CAPTURE CANCELLED (Shift+Click AUDIO for Mic, or use SYNTH)");
+      }
     }
   }
 
@@ -618,12 +642,15 @@
     }
     ensureAudioGraph();
     disconnectExternalAudio();
+    const myGen = ++audioCaptureGen;
     if (!fileAudioEl) {
       fileAudioEl = new Audio();
       fileAudioEl.crossOrigin = "anonymous";
       fileAudioEl.addEventListener("ended", () => {
-        disconnectExternalAudio();
-        syncControlsUI();
+        if (state.audioInMode === "FILE") {
+          disconnectExternalAudio();
+          syncControlsUI();
+        }
       });
       fileAudioEl.addEventListener("error", () => {
         if (state.audioInMode === "FILE") {
@@ -647,9 +674,11 @@
     state.textDirty = true;
     syncControlsUI();
     fileAudioEl.play().then(() => {
+      if (myGen !== audioCaptureGen) return;
       ingestLogChunk(`[LogBlaster:SHOCKWAVE] >>> AUDIO-REACTIVE PLAYBACK: ${file.name} <<<\n`);
       showToast(`PLAYING & VISUALIZING: ${file.name}`);
     }).catch(() => {
+      if (myGen !== audioCaptureGen) return;
       disconnectExternalAudio();
       syncControlsUI();
       showToast("COULD NOT DECODE AUDIO FILE");
@@ -1221,7 +1250,7 @@
     return `${hh}:${mm}:${ss}`;
   }
 
-  function appendOrUpdateLine(rawLine, isoTime, replaceLast, silentBackfill = false) {
+  function appendOrUpdateLine(rawLine, isoTime, replaceLast, silentBackfill = false, signalDelta = null) {
     const boundedRaw = rawLine.length > MAX_LINE_CHARS
       ? rawLine.slice(0, MAX_LINE_CHARS) + " … [truncated]"
       : rawLine;
@@ -1246,10 +1275,16 @@
     rebuildLineView(entry);
 
     if (replaceLast && state.lines.length > 0) {
-      const prevKind = state.lines[state.lines.length - 1].kind;
+      const prev = state.lines[state.lines.length - 1];
+      const prevKind = prev.kind;
       entry.ts = now - 110;
+      entry._smoothH = prev._smoothH || 0;
       state.lines[state.lines.length - 1] = entry;
-      if (prevKind !== entry.kind) recomputeErrorCount();
+      if (prevKind !== entry.kind) {
+        recomputeErrorCount();
+        btnErrJump.textContent = `ERR: ${state.errorCount}`;
+        btnErrJump.classList.toggle("err-active", state.errorCount > 0);
+      }
     } else {
       state.lines.push(entry);
       if (entry.kind === "error") state.errorCount++;
@@ -1277,43 +1312,47 @@
     }
 
     if (!silentBackfill) {
-      feedSignalAnalyzer(entry.viewRaw, sem.energy, sem.kind);
+      const sigSource = typeof signalDelta === "string"
+        ? redactSensitiveText(signalDelta).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+        : entry.viewRaw;
+      feedSignalAnalyzer(sigSource, sem.energy, sem.kind);
     }
   }
 
   function ingestLogChunk(text, isoTime, silentBackfill = false) {
     if (typeof text !== "string" || !text.length) return;
-    const norm = text.replace(/\r\n/g, "\n");
-    const newlineParts = norm.split("\n");
+    const tokens = text.match(/[^\r\n]+|\r|\n/g);
+    if (!tokens) return;
 
-    for (let i = 0; i < newlineParts.length; i++) {
-      const part = newlineParts[i];
-      const isTrailingEmptyAfterLf = (i === newlineParts.length - 1 && part === "");
-      if (isTrailingEmptyAfterLf) {
-        state.partialCrActive = false;
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i];
+      if (tok === "\r") {
+        state.partialCrPending = true;
+        continue;
+      }
+      if (tok === "\n") {
+        // Closes an open partial line (including split \r + \n CRLF or Python print's trailing "\n")
+        state.partialCrPending = false;
+        state.partialLineOpen = false;
+        state.partialRawText = "";
         continue;
       }
 
-      if (part.includes("\r")) {
-        const crSegments = part.split("\r");
-        for (let c = 0; c < crSegments.length; c++) {
-          const seg = crSegments[c];
-          if (seg === "" && c === 0) {
-            state.partialCrActive = true;
-            continue;
-          }
-          if (!seg) continue;
-          const shouldReplace = state.partialCrActive || c > 0;
-          appendOrUpdateLine(seg, isoTime, shouldReplace, silentBackfill);
-          state.partialCrActive = true;
+      if (state.partialCrPending) {
+        state.partialCrPending = false;
+        state.partialRawText = tok.length > MAX_LINE_CHARS ? tok.slice(0, MAX_LINE_CHARS + 32) : tok;
+        const replaceOpen = state.partialLineOpen && state.lines.length > 0;
+        appendOrUpdateLine(state.partialRawText, isoTime, replaceOpen, silentBackfill, tok);
+        state.partialLineOpen = true;
+      } else if (state.partialLineOpen && state.lines.length > 0) {
+        if (state.partialRawText.length <= MAX_LINE_CHARS + 32) {
+          state.partialRawText += tok;
         }
+        appendOrUpdateLine(state.partialRawText, isoTime, true, silentBackfill, tok);
       } else {
-        appendOrUpdateLine(part, isoTime, state.partialCrActive, silentBackfill);
-        state.partialCrActive = false;
-      }
-
-      if (i < newlineParts.length - 1) {
-        state.partialCrActive = false;
+        state.partialRawText = tok.length > MAX_LINE_CHARS ? tok.slice(0, MAX_LINE_CHARS + 32) : tok;
+        appendOrUpdateLine(state.partialRawText, isoTime, false, silentBackfill, tok);
+        state.partialLineOpen = true;
       }
     }
   }
@@ -1330,30 +1369,153 @@
   let telemetryTimer = null;
   let rateTimer = null;
   let demoTimers = [];
+  const lastEventSigByType = new Map();
 
-  async function backfillAndSubscribeLogs() {
+  async function fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
+    const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
     try {
-      const rawRes = await fetch("/internal/logs/raw", { cache: "no-store" });
-      if (rawRes.ok) {
-        const data = await rawRes.json();
-        if (Array.isArray(data?.entries) && state.lines.length <= 4) {
-          for (const item of data.entries) {
-            if (item && typeof item.m === "string") {
-              ingestLogChunk(item.m, item.t, true);
-            }
+      return await fetch(url, ctrl ? { ...options, signal: ctrl.signal } : options);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  function resolveNodeTitle(nodeId) {
+    const key = String(nodeId);
+    if (state.nodeTitleMap.has(key)) return state.nodeTitleMap.get(key);
+    if (key.includes(":")) {
+      const leaf = key.split(":").pop();
+      if (leaf && state.nodeTitleMap.has(leaf)) return state.nodeTitleMap.get(leaf);
+    }
+    return null;
+  }
+
+  function handleComfyEvent(type, data) {
+    if (!type || state.shuttingDown) return;
+    const now = performance.now();
+    const sig = `${type}:${data?.prompt_id || ""}:${data?.node ?? data?.node_id ?? ""}:${
+      type === "progress"
+        ? `${data?.value}/${data?.max}`
+        : (type === "status" ? data?.status?.exec_info?.queue_remaining : "")
+    }`;
+    const prevEvt = lastEventSigByType.get(type);
+    if (prevEvt && prevEvt.sig === sig && (now - prevEvt.ts) < 400) {
+      return;
+    }
+    lastEventSigByType.set(type, { sig, ts: now });
+
+    if (type === "execution_start") {
+      state.runState = "BLASTING";
+      state.runStartMs = now;
+      state.stepVal = 0;
+      state.stepMax = 0;
+      state.degaussWobble = 1.0;
+      state.flashPulse = 0.85;
+      triggerShockwave(0.5, 0.25);
+      const pid = String(data?.prompt_id || "").slice(0, 8);
+      ingestLogChunk(`[LogBlaster:SHOCKWAVE] >>> WORKFLOW EXECUTION STARTED${pid ? ` (prompt ${pid})` : ""} <<<\n`);
+    } else if (type === "executing") {
+      const nodeId = data?.node;
+      if (nodeId === null || nodeId === undefined) {
+        if (state.runState === "BLASTING") {
+          state.runState = "COMPLETE";
+          if (state.runStartMs) {
+            state.lastElapsedSec = (now - state.runStartMs) / 1000;
           }
-          state.smoothScrollPx = 0;
-          state.blastRate = 0.15;
+          state.activeNodeTitle = "Workflow Complete";
+          state.flashPulse = 1.0;
+          triggerShockwave(0.5, 0.5);
+          playSynthTick("complete", 1.0);
+        }
+      } else {
+        state.runState = "BLASTING";
+        if (!state.runStartMs) state.runStartMs = now;
+        state.activeNodeId = String(nodeId);
+        const knownTitle = resolveNodeTitle(nodeId);
+        state.activeNodeTitle = knownTitle ? `${knownTitle} (#${nodeId})` : `Node #${nodeId}`;
+        state.nodePulse = 1.0;
+        state.stepVal = 0;
+        state.stepMax = 0;
+        triggerShockwave(0.2 + Math.random() * 0.6, 0.35 + Math.random() * 0.3);
+        playSynthTick("shock", 0.8);
+        if (!state.logStreamAvailable) {
+          ingestLogChunk(`[ComfyUI] Executing ${state.activeNodeTitle}\n`);
         }
       }
-    } catch (_) {}
+      state.textDirty = true;
+    } else if (type === "progress") {
+      if (state.lastStepMs > 0 && Number(data?.value) > state.stepVal) {
+        const dt = (now - state.lastStepMs) / 1000;
+        if (dt > 0.005 && dt < 30) {
+          const instRate = (Number(data.value) - state.stepVal) / dt;
+          state.stepRateSmooth = state.stepRateSmooth > 0
+            ? state.stepRateSmooth * 0.7 + instRate * 0.3
+            : instRate;
+        }
+      }
+      state.lastStepMs = now;
+      state.stepVal = Number(data?.value || 0);
+      state.stepMax = Number(data?.max || 0);
+      state.stepPulse = 1.0;
+      state.runState = "BLASTING";
+      if (!state.runStartMs) state.runStartMs = now;
+      state.textDirty = true;
+    } else if (type === "execution_error") {
+      state.runState = "ERROR";
+      state.glitchBurst = 1.0;
+      const errNode = data?.node_type || data?.node_id || "unknown";
+      const errMsg = data?.exception_message || "Execution error";
+      ingestLogChunk(`[ERROR] Node ${errNode}: ${errMsg}\n`);
+    } else if (type === "execution_success") {
+      state.runState = "COMPLETE";
+      if (state.runStartMs) {
+        state.lastElapsedSec = (now - state.runStartMs) / 1000;
+      }
+      state.activeNodeTitle = "Workflow Complete";
+      state.flashPulse = 1.0;
+      triggerShockwave(0.5, 0.5);
+      state.textDirty = true;
+    } else if (type === "execution_interrupted") {
+      state.runState = "IDLE";
+      state.activeNodeTitle = "Execution Interrupted";
+      state.flashPulse = Math.max(state.flashPulse, 0.65);
+      ingestLogChunk("[WARNING] Workflow execution interrupted\n");
+      state.textDirty = true;
+    } else if (type === "status") {
+      const rem = Number(data?.status?.exec_info?.queue_remaining);
+      if (Number.isFinite(rem)) {
+        if (rem > 0 && state.runState !== "BLASTING") {
+          state.runState = "BLASTING";
+          if (!state.runStartMs) state.runStartMs = now;
+          state.textDirty = true;
+        } else if (rem === 0 && state.runState === "BLASTING") {
+          state.runState = "COMPLETE";
+          if (state.runStartMs) {
+            state.lastElapsedSec = (now - state.runStartMs) / 1000;
+          }
+          state.activeNodeTitle = "Workflow Complete";
+          state.flashPulse = Math.max(state.flashPulse, 0.85);
+          state.textDirty = true;
+        }
+      }
+    }
+  }
 
+  async function syncLogsAfterOpen(gen) {
+    if (state.shuttingDown || gen !== state.lifecycleGen) return;
+    state.backfillInFlight = true;
+    state.liveLogBuffer = [];
+
+    // 1. Subscribe FIRST so zero live lines are missed between backfill and subscription
+    state.logSubAttempted = true;
     try {
-      const subRes = await fetch("/internal/logs/subscribe", {
+      const subRes = await fetchWithTimeout("/internal/logs/subscribe", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clientId: state.clientId, enabled: true }),
-      });
+      }, 4000);
+      if (state.shuttingDown || gen !== state.lifecycleGen) return;
       if (!subRes.ok) {
         state.logSubscribed = false;
         state.logStreamAvailable = false;
@@ -1368,6 +1530,7 @@
         state.logStreamAvailable = true;
       }
     } catch (_) {
+      if (state.shuttingDown || gen !== state.lifecycleGen) return;
       state.logSubscribed = false;
       state.logStreamAvailable = false;
       if (!state.warnedNoLogSub) {
@@ -1377,9 +1540,63 @@
         );
       }
     }
+
+    // 2. Backfill initial history (or gap lines newer than lastLogIsoT across a reconnect)
+    const cutoffIso = state.lastLogIsoT;
+    try {
+      const rawRes = await fetchWithTimeout("/internal/logs/raw", { cache: "no-store" }, 4000);
+      if (!state.shuttingDown && gen === state.lifecycleGen && rawRes.ok) {
+        const data = await rawRes.json();
+        if (!state.shuttingDown && gen === state.lifecycleGen && Array.isArray(data?.entries)) {
+          if (cutoffIso) {
+            state.partialLineOpen = false;
+            state.partialCrPending = false;
+            state.partialRawText = "";
+          }
+          for (const item of data.entries) {
+            if (!item || typeof item.m !== "string") continue;
+            const itemT = typeof item.t === "string" ? item.t : "";
+            if (cutoffIso && itemT && itemT <= cutoffIso) continue;
+            ingestLogChunk(item.m, itemT || undefined, true);
+            if (itemT && (!state.lastLogIsoT || itemT > state.lastLogIsoT)) {
+              state.lastLogIsoT = itemT;
+            }
+          }
+          if (!cutoffIso) {
+            state.smoothScrollPx = 0;
+            state.blastRate = 0.15;
+          }
+        }
+      }
+    } catch (_) {
+      // Non-fatal; drain buffered live entries below
+    } finally {
+      state.backfillInFlight = false;
+      if (!state.shuttingDown && gen === state.lifecycleGen) {
+        const backfillMaxT = state.lastLogIsoT;
+        const pending = state.liveLogBuffer;
+        state.liveLogBuffer = [];
+        for (const entry of pending) {
+          const entryT = typeof entry.t === "string" ? entry.t : "";
+          if (backfillMaxT && entryT && entryT <= backfillMaxT) continue;
+          ingestLogChunk(entry.m, entryT || undefined, false);
+          if (entryT && (!state.lastLogIsoT || entryT > state.lastLogIsoT)) {
+            state.lastLogIsoT = entryT;
+          }
+        }
+      } else {
+        state.liveLogBuffer = [];
+      }
+    }
   }
 
   window.addEventListener("pagehide", () => {
+    state.shuttingDown = true;
+    state.lifecycleGen++;
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
     clearTimeout(reconnectTimer);
     clearInterval(busPongTimer);
     clearInterval(telemetryTimer);
@@ -1387,9 +1604,18 @@
     demoTimers.forEach(clearTimeout);
     demoTimers = [];
     disconnectExternalAudio();
+    if (ws) {
+      try { ws.close(); } catch (_) {}
+      ws = null;
+    }
+    if (bus) {
+      try { bus.close(); } catch (_) {}
+      bus = null;
+    }
 
-    if (!state.logSubscribed) return;
+    if (!state.logSubscribed && !state.logSubAttempted) return;
     state.logSubscribed = false;
+    state.logSubAttempted = false;
     try {
       fetch("/internal/logs/subscribe", {
         method: "PATCH",
@@ -1400,7 +1626,14 @@
     } catch (_) {}
   });
 
+  window.addEventListener("pageshow", (ev) => {
+    if (ev.persisted && state.shuttingDown) {
+      location.reload();
+    }
+  });
+
   function scheduleWsReconnect() {
+    if (state.shuttingDown) return;
     clearTimeout(reconnectTimer);
     const delay = reconnectDelayMs;
     reconnectDelayMs = Math.min(12000, Math.round(reconnectDelayMs * 2));
@@ -1408,27 +1641,32 @@
   }
 
   function connectComfySocket() {
+    if (state.shuttingDown) return;
     clearTimeout(reconnectTimer);
+    const myGen = ++state.lifecycleGen;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${proto}//${location.host}/ws?clientId=${encodeURIComponent(state.clientId)}`;
 
+    let sock;
     try {
-      ws = new WebSocket(wsUrl);
+      sock = new WebSocket(wsUrl);
+      ws = sock;
     } catch (_) {
       scheduleWsReconnect();
       return;
     }
 
-    ws.addEventListener("open", () => {
+    sock.addEventListener("open", () => {
+      if (state.shuttingDown || myGen !== state.lifecycleGen) return;
       reconnectDelayMs = 1500;
       state.wsConnected = true;
       state.textDirty = true;
       ingestLogChunk("[LogBlaster] Connected to ComfyUI live log + event stream (/ws)\n");
-      backfillAndSubscribeLogs();
+      syncLogsAfterOpen(myGen);
     });
 
-    ws.addEventListener("message", (ev) => {
-      if (typeof ev.data !== "string") return;
+    sock.addEventListener("message", (ev) => {
+      if (state.shuttingDown || myGen !== state.lifecycleGen || typeof ev.data !== "string") return;
       let msg;
       try {
         msg = JSON.parse(ev.data);
@@ -1438,88 +1676,34 @@
       const { type, data } = msg;
       if (type === "logs" && Array.isArray(data?.entries)) {
         for (const entry of data.entries) {
-          if (entry && typeof entry.m === "string") {
+          if (!entry || typeof entry.m !== "string") continue;
+          if (state.backfillInFlight) {
+            if (state.liveLogBuffer.length < MAX_LINES) {
+              state.liveLogBuffer.push(entry);
+            }
+          } else {
             ingestLogChunk(entry.m, entry.t);
+            if (typeof entry.t === "string" && (!state.lastLogIsoT || entry.t > state.lastLogIsoT)) {
+              state.lastLogIsoT = entry.t;
+            }
           }
         }
-      } else if (type === "execution_start") {
-        state.runState = "BLASTING";
-        state.runStartMs = performance.now();
-        state.stepVal = 0;
-        state.stepMax = 0;
-        state.degaussWobble = 1.0;
-        state.flashPulse = 0.85;
-        triggerShockwave(0.5, 0.25);
-        ingestLogChunk(`[LogBlaster:SHOCKWAVE] >>> WORKFLOW EXECUTION STARTED (prompt ${String(data?.prompt_id || "").slice(0, 8)}) <<<\n`);
-      } else if (type === "executing") {
-        const nodeId = data?.node;
-        if (nodeId === null || nodeId === undefined) {
-          if (state.runState === "BLASTING") {
-            state.runState = "COMPLETE";
-            state.lastElapsedSec = (performance.now() - state.runStartMs) / 1000;
-            state.activeNodeTitle = "Workflow Complete";
-            state.flashPulse = 1.0;
-            triggerShockwave(0.5, 0.5);
-            playSynthTick("complete", 1.0);
-          }
-        } else {
-          state.runState = "BLASTING";
-          if (!state.runStartMs) state.runStartMs = performance.now();
-          state.activeNodeId = String(nodeId);
-          const knownTitle = state.nodeTitleMap.get(String(nodeId));
-          state.activeNodeTitle = knownTitle ? `${knownTitle} (#${nodeId})` : `Node #${nodeId}`;
-          state.nodePulse = 1.0;
-          state.stepVal = 0;
-          state.stepMax = 0;
-          triggerShockwave(0.2 + Math.random() * 0.6, 0.35 + Math.random() * 0.3);
-          playSynthTick("shock", 0.8);
-          if (!state.logStreamAvailable) {
-            ingestLogChunk(`[ComfyUI] Executing ${state.activeNodeTitle}\n`);
-          }
-        }
-        state.textDirty = true;
-      } else if (type === "progress") {
-        const now = performance.now();
-        if (state.lastStepMs > 0 && data?.value > state.stepVal) {
-          const dt = (now - state.lastStepMs) / 1000;
-          if (dt > 0.005 && dt < 30) {
-            const instRate = (data.value - state.stepVal) / dt;
-            state.stepRateSmooth = state.stepRateSmooth > 0
-              ? state.stepRateSmooth * 0.7 + instRate * 0.3
-              : instRate;
-          }
-        }
-        state.lastStepMs = now;
-        state.stepVal = Number(data?.value || 0);
-        state.stepMax = Number(data?.max || 0);
-        state.stepPulse = 1.0;
-        state.runState = "BLASTING";
-        state.textDirty = true;
-      } else if (type === "execution_error") {
-        state.runState = "ERROR";
-        state.glitchBurst = 1.0;
-        const errNode = data?.node_type || data?.node_id || "unknown";
-        const errMsg = data?.exception_message || "Execution error";
-        ingestLogChunk(`[ERROR] Node ${errNode}: ${errMsg}\n`);
-      } else if (type === "execution_success") {
-        state.runState = "COMPLETE";
-        if (state.runStartMs) {
-          state.lastElapsedSec = (performance.now() - state.runStartMs) / 1000;
-        }
-        state.flashPulse = 1.0;
-        triggerShockwave(0.5, 0.5);
-        state.textDirty = true;
+      } else {
+        handleComfyEvent(type, data);
       }
     });
 
-    ws.addEventListener("close", () => {
+    sock.addEventListener("close", () => {
+      if (myGen !== state.lifecycleGen) return;
       state.wsConnected = false;
       state.textDirty = true;
-      scheduleWsReconnect();
+      if (!state.shuttingDown) {
+        scheduleWsReconnect();
+      }
     });
 
-    ws.addEventListener("error", () => {
-      try { ws.close(); } catch (_) {}
+    sock.addEventListener("error", () => {
+      try { sock.close(); } catch (_) {}
     });
   }
 
@@ -1527,80 +1711,101 @@
   try {
     bus = new BroadcastChannel("comfy-logblaster-bus");
     bus.addEventListener("message", (ev) => {
+      if (state.shuttingDown) return;
       const m = ev.data;
       if (!m || typeof m !== "object") return;
       if (m.type === "ping") {
-        bus.postMessage({ type: "pong", ts: Date.now() });
+        try { bus.postMessage({ type: "pong", ts: Date.now() }); } catch (_) {}
       } else if (m.type === "node_map" && m.nodes && typeof m.nodes === "object") {
+        if (m.replace) state.nodeTitleMap.clear();
         for (const [id, title] of Object.entries(m.nodes)) {
           state.nodeTitleMap.set(String(id), String(title));
         }
-        if (state.activeNodeId && state.nodeTitleMap.has(state.activeNodeId)) {
-          state.activeNodeTitle = `${state.nodeTitleMap.get(state.activeNodeId)} (#${state.activeNodeId})`;
-          state.textDirty = true;
+        if (state.activeNodeId) {
+          const resolved = resolveNodeTitle(state.activeNodeId);
+          if (resolved) {
+            state.activeNodeTitle = `${resolved} (#${state.activeNodeId})`;
+            state.textDirty = true;
+          }
         }
+      } else if (m.type === "comfy_event" && typeof m.event === "string") {
+        handleComfyEvent(m.event, m.data);
       } else if (m.type === "wake") {
         state.flashPulse = Math.max(state.flashPulse, 0.65);
         state.textDirty = true;
       }
     });
+    try { bus.postMessage({ type: "hello", ts: Date.now() }); } catch (_) {}
     busPongTimer = setInterval(() => {
+      if (state.shuttingDown || !bus) return;
       try { bus.postMessage({ type: "pong", ts: Date.now() }); } catch (_) {}
     }, 1500);
   } catch (_) {}
 
-  // Poll NVML telemetry first; fall back to ComfyUI /system_stats on Mac MPS / AMD ROCm / CPU!
+  // Single-flight telemetry poller: queries NVML first, latches nvmlUnavailable once
+  // reported unavailable so Mac MPS / AMD ROCm / CPU hosts only query /system_stats.
+  let telemetryInFlight = false;
   async function pollTelemetry() {
-    if (document.hidden) return;
+    if (document.hidden || state.shuttingDown || telemetryInFlight) return;
+    telemetryInFlight = true;
     try {
-      const res = await fetch("/logblaster/telemetry", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.available) {
-          state.gpuTelemetry = { ...data, metrics_mode: data.metrics_mode || "nvml" };
-          state.textDirty = true;
-          return;
-        }
+      if (!state.nvmlUnavailable) {
+        try {
+          const res = await fetchWithTimeout("/logblaster/telemetry", { cache: "no-store" }, 2500);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.available) {
+              state.gpuTelemetry = { ...data, metrics_mode: data.metrics_mode || "nvml" };
+              state.textDirty = true;
+              return;
+            }
+            if (data && data.available === false) {
+              state.nvmlUnavailable = true;
+            }
+          }
+        } catch (_) {}
       }
-    } catch (_) {}
 
-    // Non-NVIDIA fallback: ComfyUI standard /system_stats
-    try {
-      const sysRes = await fetch("/system_stats", { cache: "no-store" });
-      if (sysRes.ok) {
-        const sysData = await sysRes.json();
-        const devs = Array.isArray(sysData?.devices)
-          ? sysData.devices
-          : (Array.isArray(sysData?.system?.devices) ? sysData.system.devices : []);
-        const dev = devs.find((d) => d && String(d.type || "").toLowerCase() !== "cpu") || devs[0] || null;
-        if (dev) {
-          const rawTotal = Number(dev.vram_total);
-          const rawFree = Number(dev.vram_free);
-          const totalMib = Number.isFinite(rawTotal) && rawTotal >= 0
-            ? Math.round(rawTotal / (1024 * 1024))
-            : 0;
-          const freeMib = Number.isFinite(rawFree) && rawFree >= 0
-            ? Math.round(rawFree / (1024 * 1024))
-            : 0;
-          const cleanName = String(dev.name || dev.type || "Compute Device")
-            .replace(/^(?:cuda|mps|xpu|hip|cpu)(?::\d+)?\s+/i, "")
-            .replace(/\s*:.*$/, "")
-            .trim() || "Compute Device";
-          state.gpuTelemetry = {
-            ok: true,
-            available: totalMib > 0,
-            metrics_mode: "vram_only",
-            gpu_name: cleanName,
-            gpu_util: 0,
-            vram_used_mib: Math.max(0, totalMib - freeMib),
-            vram_total_mib: totalMib,
-            temp_c: 0,
-            power_w: 0,
-          };
-          state.textDirty = true;
+      // Non-NVIDIA fallback: ComfyUI standard /system_stats
+      try {
+        const sysRes = await fetchWithTimeout("/system_stats", { cache: "no-store" }, 2500);
+        if (sysRes.ok) {
+          const sysData = await sysRes.json();
+          const devs = Array.isArray(sysData?.devices)
+            ? sysData.devices
+            : (Array.isArray(sysData?.system?.devices) ? sysData.system.devices : []);
+          const dev = devs.find((d) => d && String(d.type || "").toLowerCase() !== "cpu") || devs[0] || null;
+          if (dev) {
+            const rawTotal = Number(dev.vram_total);
+            const rawFree = Number(dev.vram_free);
+            const totalMib = Number.isFinite(rawTotal) && rawTotal >= 0
+              ? Math.round(rawTotal / (1024 * 1024))
+              : 0;
+            const freeMib = Number.isFinite(rawFree) && rawFree >= 0
+              ? Math.round(rawFree / (1024 * 1024))
+              : 0;
+            const cleanName = String(dev.name || dev.type || "Compute Device")
+              .replace(/^(?:cuda|mps|xpu|hip|cpu)(?::\d+)?\s+/i, "")
+              .replace(/\s*:.*$/, "")
+              .trim() || "Compute Device";
+            state.gpuTelemetry = {
+              ok: true,
+              available: totalMib > 0,
+              metrics_mode: "vram_only",
+              gpu_name: cleanName,
+              gpu_util: 0,
+              vram_used_mib: Math.max(0, totalMib - freeMib),
+              vram_total_mib: totalMib,
+              temp_c: 0,
+              power_w: 0,
+            };
+            state.textDirty = true;
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    } finally {
+      telemetryInFlight = false;
+    }
   }
   telemetryTimer = setInterval(pollTelemetry, 1200);
   pollTelemetry();
@@ -2931,7 +3136,7 @@ void main() {
   let pingPong = false;
 
   function scheduleNextFrame() {
-    if (!rafId && !document.hidden && !state.contextLost) {
+    if (!rafId && !document.hidden && !state.contextLost && !state.shuttingDown) {
       rafId = requestAnimationFrame(renderFrame);
     }
   }

@@ -2,9 +2,10 @@
  * ComfyUI-LogBlaster frontend extension.
  *
  * - Adds a "LOG BLASTER" launcher button + "AUTO" toggle to ComfyUI's top bar.
- * - Automatically pops open (or wakes) the WebGL2 GPU Shader Log HUD window
- *   whenever a workflow starts running (both via UI Queue Prompt and API runs).
- * - Bridges human-readable node titles from `app.graph` over BroadcastChannel
+ * - Automatically pops open (or wakes without reloading) the WebGL2 GPU Shader
+ *   Log HUD window whenever a workflow starts running (both via UI Queue Prompt
+ *   and external/headless API runs).
+ * - Bridges human-readable node titles and workflow events over BroadcastChannel
  *   so the HUD displays real node titles alongside blasting logs.
  */
 import { app } from "../../scripts/app.js";
@@ -18,35 +19,47 @@ let popupRef = null;
 let lastPongMs = 0;
 let dockEl = null;
 let bus = null;
+let autoOpenFallback = true;
+let lastQueueRemaining = 0;
+let autoOpenGraceTimer = null;
 
 function isAutoOpenEnabled() {
-  const val = localStorage.getItem(STORAGE_AUTO_KEY);
-  return val === null ? true : val === "1";
+  try {
+    const val = localStorage.getItem(STORAGE_AUTO_KEY);
+    return val === null ? autoOpenFallback : val === "1";
+  } catch (_) {
+    return autoOpenFallback;
+  }
 }
 
 function setAutoOpenEnabled(enabled) {
-  localStorage.setItem(STORAGE_AUTO_KEY, enabled ? "1" : "0");
+  autoOpenFallback = Boolean(enabled);
+  try {
+    localStorage.setItem(STORAGE_AUTO_KEY, enabled ? "1" : "0");
+  } catch (_) {
+    // Non-fatal in restricted storage contexts
+  }
 }
 
 function isHudWindowAlive() {
   if (popupRef && !popupRef.closed) return true;
-  if (Date.now() - lastPongMs < 3500) return true;
+  if (Date.now() - lastPongMs < 3800) return true;
   if (dockEl && document.body.contains(dockEl)) return true;
   return false;
 }
 
-function publishGraphNodeTitles() {
+function publishGraphNodeTitles(replace = true) {
   if (!bus) return;
   try {
-    const nodes = app?.graph?._nodes;
-    if (!Array.isArray(nodes)) return;
+    const rawNodes = app?.graph?.nodes || app?.graph?._nodes;
+    if (!Array.isArray(rawNodes)) return;
     const map = {};
-    for (const n of nodes) {
+    for (const n of rawNodes) {
       if (n && n.id !== undefined) {
         map[String(n.id)] = String(n.title || n.comfyClass || n.type || `Node ${n.id}`);
       }
     }
-    bus.postMessage({ type: "node_map", nodes: map });
+    bus.postMessage({ type: "node_map", replace: Boolean(replace), nodes: map });
   } catch (_) {
     // Non-fatal
   }
@@ -54,6 +67,10 @@ function publishGraphNodeTitles() {
 
 function closeEmbeddedDock() {
   if (dockEl) {
+    const iframe = dockEl.querySelector("iframe");
+    if (iframe) {
+      try { iframe.src = "about:blank"; } catch (_) {}
+    }
     dockEl.remove();
     dockEl = null;
   }
@@ -109,6 +126,7 @@ function openEmbeddedDock() {
   ].join(";");
 
   const popBtn = document.createElement("button");
+  popBtn.type = "button";
   popBtn.textContent = "Pop Out Window";
   popBtn.style.cssText = btnStyle;
   popBtn.addEventListener("click", () => {
@@ -117,6 +135,7 @@ function openEmbeddedDock() {
   });
 
   const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
   closeBtn.textContent = "X";
   closeBtn.style.cssText = btnStyle;
   closeBtn.addEventListener("click", closeEmbeddedDock);
@@ -125,6 +144,8 @@ function openEmbeddedDock() {
   bar.append(title, actions);
 
   const iframe = document.createElement("iframe");
+  iframe.allow = "clipboard-write; fullscreen; microphone; display-capture; autoplay";
+  iframe.allowFullscreen = true;
   iframe.src = HUD_URL;
   iframe.style.cssText = "flex:1;width:100%;border:none;background:#030508;";
 
@@ -132,38 +153,75 @@ function openEmbeddedDock() {
   document.body.appendChild(dockEl);
 }
 
-function openLogBlasterWindow(fromUserClick = false) {
-  publishGraphNodeTitles();
+function openLogBlasterWindow(focusIfOpen = false) {
+  publishGraphNodeTitles(true);
 
   if (isHudWindowAlive()) {
     try { bus?.postMessage({ type: "wake", ts: Date.now() }); } catch (_) {}
-    if (fromUserClick && popupRef && !popupRef.closed) {
+    if (focusIfOpen && popupRef && !popupRef.closed) {
       try { popupRef.focus(); } catch (_) {}
     }
     return;
   }
 
-  const w = Math.min(1380, Math.round(window.screen.availWidth * 0.82));
-  const h = Math.min(860, Math.round(window.screen.availHeight * 0.82));
-  const left = Math.max(20, Math.round((window.screen.availWidth - w) / 2));
-  const top = Math.max(20, Math.round((window.screen.availHeight - h) / 2));
+  const availW = Number(window.screen?.availWidth) || window.innerWidth || 1440;
+  const availH = Number(window.screen?.availHeight) || window.innerHeight || 900;
+  const w = Math.min(1380, Math.round(availW * 0.82));
+  const h = Math.min(860, Math.round(availH * 0.82));
+  const left = Math.max(20, Math.round((availW - w) / 2));
+  const top = Math.max(20, Math.round((availH - h) / 2));
   const features = `popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes`;
 
   let opened = null;
   try {
-    opened = window.open(HUD_URL, WINDOW_NAME, features);
+    // Open named target with empty URL first so an existing background-throttled
+    // HUD popup is re-attached without reloading / wiping its 3,500-line buffer!
+    opened = window.open("", WINDOW_NAME, features);
   } catch (_) {
     opened = null;
   }
 
   if (opened) {
     popupRef = opened;
+    try {
+      const curHref = opened.location?.href || "";
+      if (!curHref || curHref === "about:blank") {
+        opened.location.href = HUD_URL;
+      } else {
+        try { bus?.postMessage({ type: "wake", ts: Date.now() }); } catch (_) {}
+        if (focusIfOpen) {
+          try { opened.focus(); } catch (_) {}
+        }
+      }
+    } catch (_) {
+      try { opened.location.href = HUD_URL; } catch (_) {}
+    }
     closeEmbeddedDock();
-    setTimeout(publishGraphNodeTitles, 500);
+    setTimeout(() => publishGraphNodeTitles(true), 500);
   } else {
     // Popup blocked (e.g. external API trigger without user gesture) -> show sleek embedded HUD dock
     openEmbeddedDock();
   }
+}
+
+function requestExternalRunAutoOpen() {
+  publishGraphNodeTitles(true);
+  if (!isAutoOpenEnabled() || isHudWindowAlive()) return;
+  try { bus?.postMessage({ type: "ping" }); } catch (_) {}
+  if (autoOpenGraceTimer) return;
+  autoOpenGraceTimer = setTimeout(() => {
+    autoOpenGraceTimer = null;
+    if (isAutoOpenEnabled() && !isHudWindowAlive()) {
+      openLogBlasterWindow(false);
+    }
+  }, 180);
+}
+
+function relayComfyEvent(eventName, detail) {
+  if (!bus) return;
+  try {
+    bus.postMessage({ type: "comfy_event", event: eventName, data: detail || {} });
+  } catch (_) {}
 }
 
 function mountToolbarControls() {
@@ -249,8 +307,12 @@ app.registerExtension({
     try {
       bus = new BroadcastChannel("comfy-logblaster-bus");
       bus.addEventListener("message", (ev) => {
-        if (ev.data?.type === "pong") {
+        const msgType = ev.data?.type;
+        if (msgType === "pong") {
           lastPongMs = Date.now();
+        } else if (msgType === "hello") {
+          lastPongMs = Date.now();
+          publishGraphNodeTitles(true);
         }
       });
       bus.postMessage({ type: "ping" });
@@ -262,32 +324,52 @@ app.registerExtension({
     // Re-check toolbar mount after Vue topbar finishes async hydration
     setTimeout(mountToolbarControls, 1200);
 
-    // Hook synchronous queuePrompt so clicking Run opens the window inside the user gesture!
+    // Hook synchronous queuePrompt so clicking Run opens the window inside the user gesture,
+    // without stealing focus if already open and never blocking prompt queueing on any UI error.
     if (api && typeof api.queuePrompt === "function" && !api._logBlasterWrapped) {
       const origQueuePrompt = api.queuePrompt.bind(api);
       api._logBlasterWrapped = true;
       api.queuePrompt = async function (...args) {
-        if (isAutoOpenEnabled()) {
-          openLogBlasterWindow(true);
-        } else {
-          publishGraphNodeTitles();
+        try {
+          if (isAutoOpenEnabled()) {
+            openLogBlasterWindow(false);
+          } else {
+            publishGraphNodeTitles(true);
+          }
+        } catch (_) {
+          // Never prevent workflow submission
         }
         return origQueuePrompt(...args);
       };
     }
 
-    // Also catch external / headless API runs while ComfyUI UI is open
-    api.addEventListener("execution_start", () => {
-      publishGraphNodeTitles();
-      if (isAutoOpenEnabled() && !isHudWindowAlive()) {
-        // Brief grace period for BroadcastChannel pong before opening
-        try { bus?.postMessage({ type: "ping" }); } catch (_) {}
-        setTimeout(() => {
-          if (isAutoOpenEnabled() && !isHudWindowAlive()) {
-            openLogBlasterWindow(false);
-          }
-        }, 180);
+    // Relay execution events & catch external/headless API runs while ComfyUI UI is open
+    for (const evName of [
+      "execution_start",
+      "executing",
+      "progress",
+      "execution_error",
+      "execution_success",
+      "execution_interrupted",
+    ]) {
+      api.addEventListener(evName, (ev) => {
+        if (evName === "execution_start") {
+          requestExternalRunAutoOpen();
+        }
+        relayComfyEvent(evName, ev?.detail);
+      });
+    }
+
+    // `status` is always broadcast (`sid=None`), catching headless runs queued without `client_id`
+    api.addEventListener("status", (ev) => {
+      const rem = Number(ev?.detail?.exec_info?.queue_remaining ?? ev?.detail?.status?.exec_info?.queue_remaining ?? 0);
+      if (Number.isFinite(rem)) {
+        if (rem > 0 && lastQueueRemaining === 0) {
+          requestExternalRunAutoOpen();
+        }
+        lastQueueRemaining = rem;
       }
+      relayComfyEvent("status", { status: ev?.detail?.status ? ev.detail.status : ev?.detail });
     });
   },
 });
