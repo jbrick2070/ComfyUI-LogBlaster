@@ -24,6 +24,14 @@ Instead of a flat wall of uniform tiny HTML text, `ComfyUI-LogBlaster` renders C
 
 Restart ComfyUI — no Python packages to install and **0 MB extra PyTorch VRAM** (`ctypes` NVML). LogBlaster automatically registers `GET /logblaster`, mounts **`LOG BLASTER | AUTO: ON`** in ComfyUI's top bar, and pops open on workflow runs.
 
+## Getting Comfortable
+
+- Open **?** or press **H** for the quick guide. It appears automatically on your first visit.
+- Try **TEST BLAST** while no workflow is running to preview a short ComfyUI demo. A real workflow takes priority over the demo.
+- Scroll up to hold your place in history; press **Space** to pause or resume. Browser shortcuts such as Ctrl+A and Ctrl+F keep their usual behavior.
+- In smaller windows, **MORE** contains text-size and copy controls. The log area stays clear of wrapped controls.
+- Your system's **reduced-motion preference** disables moving distortions and animated scrolling, and caps FX at 60%. You can lower FX further.
+
 ## Giant Foreground Live Text -> Shrinking Trail (`VIEW` Modes, Hotkey `V`)
 
 | Mode | Visual Behavior |
@@ -49,14 +57,19 @@ Restart ComfyUI — no Python packages to install and **0 MB extra PyTorch VRAM*
 - Requests `powerPreference: "low-power"` (`?gpu=high` opt-in) and honestly reports the active WebGL2 GPU adapter + live FPS in the top-right telemetry block.
 - Reads NVIDIA GPU utilization, VRAM, temperature, and watts via zero-subprocess, zero-`torch.cuda` `ctypes` NVML (`telemetry.py`), automatically falling back to ComfyUI `GET /system_stats` VRAM telemetry on macOS MPS, AMD ROCm, Intel XPU, or CPU.
 
+- Telemetry shows **STALE** after five seconds without a valid sample and **OFFLINE** after fifteen. A disconnected server shows outage time and a retry countdown. NVML recovers automatically after transient failures.
+
 ## Zero-Echo Audio Reactivity (`M` / `A` / Drag & Drop)
 
 - **`SYNTH` (`M`)**: Built-in procedural Web Audio telemetry synthesizer — turns live log velocity, diffusion steps, node transitions, and errors into gentle sci-fi ticks, bass drones, and completion chords fed directly into the 512-point GPU FFT texture (`u_audioTex`).
 - **`AUDIO` (`A` / `Shift+Click`)**: Capture System/Tab loopback audio (`getDisplayMedia`, video track immediately stopped) or Microphone (`Shift+Click`), routed strictly to a silent terminal `AnalyserNode` (never echoed back to speakers!), or **drag-and-drop any `.mp3`/`.wav`/`.ogg`/`.flac` file** onto the window.
 
+- **SYS/MIC are silent taps; FILE/SYNTH are audible.** SYNTH quiets when the window is hidden and resumes when shown. FILE playback is left unchanged.
+
 ## Streamer Privacy Redaction, Live Filter & Error Jump
 
 - **`REDACT: ON` (default)**: Automatically masks secret tokens (`sk-`, `gh*_`, `hf_`, `AIza`, `AKIA`, `Authorization: Bearer ...`, `api_key`/`token`/`secret`/`password`), URL basic-auth credentials (`https://user:pass@host` -> `https://user:***REDACTED***@host`), and collapses local home paths (`C:\Users\<name>\` -> `~\`) on screen and when copying logs (`COPY`).
+- Quoted JSON values, keys such as `client_secret` and `refresh_token`, Basic/Token/ApiKey authorization headers, password-only URLs and bare home directories are covered, including partial streaming values. COPY exports the bounded visible history with truncation markers for long lines.
 - **`/` Live Filter**: Filter the 3,500-line scrollback buffer in real time inside the GPU shader.
 - **`E` Error Jump (`ERR: N`)**: Instantly pause follow and spotlight any error line directly in the giant foreground Hero stage.
 
@@ -69,3 +82,7 @@ Restart ComfyUI — no Python packages to install and **0 MB extra PyTorch VRAM*
 3. **Chromeless Native App Window**: Run `launch_log_blaster.bat [port] [host]`.
 4. **Opt-in Headless Watcher**: Run `powershell -ExecutionPolicy Bypass -File scripts\watch_and_pop.ps1 -HostName 127.0.0.1 -Port 8000` when driving headless API jobs with no ComfyUI browser tab open.
 5. **Optional Workflow Stage Marker (`LogBlaster_StageCue`)**: Drop `LogBlaster Stage Cue (FX Marker)` (`utils/LogBlaster`) inline on any wire (`passthrough`) or as a leaf cue (`always_fire = True`) to trigger `SHOCKWAVE`, `GLITCH_BURST`, `PHOSPHOR_FLASH`, or `BANNER_ONLY` pulses at key workflow milestones without invalidating downstream ComfyUI cache by default.
+
+## Development Checks
+
+Run `python -m pytest -q -p no:cacheprovider tests/test_logblaster.py` with Node.js available for the frontend harnesses. CI runs this plugin suite on main pushes and pull requests. The maintainer's separate `comfyui-custom-node-survival-guide/tests/bug_bible_regression.py` suite is also a mandatory local gate; it is not bundled or run by this repository's CI. Publishing requires an intentional version change or manual release dispatch.

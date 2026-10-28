@@ -7,6 +7,7 @@ from ``nvml.dll`` / ``libnvidia-ml.so.1`` in ~0.03 ms without importing
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import os
 import re
@@ -83,14 +84,58 @@ class NvmlReader:
         self._last_payload: Optional[Dict[str, Any]] = None
         self._initialized = False
         self._failed = False
+        self._retry_at = 0.0
+        self._retry_delay_sec = 30.0
         self._lib: Any = None
         self._handle = ctypes.c_void_p()
         self._gpu_name = "GPU"
 
+    def _release_nvml(self) -> None:
+        """Balance our successful nvmlInit call before discarding its handle."""
+        lib = self._lib
+        self._lib = None
+        self._initialized = False
+        self._handle = ctypes.c_void_p()
+        self._resolved_index = None
+        self._gpu_name = "GPU"
+        if lib is not None:
+            try:
+                lib.nvmlShutdown.restype = ctypes.c_int
+                lib.nvmlShutdown()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        with self._lock:
+            self._release_nvml()
+            self._last_payload = None
+
+    def _defer_retry(self) -> None:
+        self._release_nvml()
+        self._retry_at = time.monotonic() + self._retry_delay_sec
+
+    def _unavailable_snapshot(self, now: float) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "ok": False,
+            "available": False,
+            "metrics_mode": "unavailable",
+            "device_index": None,
+            "gpu_name": "Unavailable",
+            "gpu_util": 0,
+            "mem_util": 0,
+            "vram_used_mib": 0,
+            "vram_total_mib": 0,
+            "temp_c": 0,
+            "power_w": 0.0,
+        }
+        self._last_ts = now
+        self._last_payload = payload
+        return dict(payload)
+
     def _ensure_init(self) -> bool:
         if self._initialized:
             return True
-        if self._failed:
+        if self._failed or time.monotonic() < self._retry_at:
             return False
 
         if self._device_index is not None:
@@ -119,15 +164,17 @@ class NvmlReader:
                 continue
 
         if lib is None:
-            self._failed = True
+            self._defer_retry()
             return False
 
         try:
             init_fn = getattr(lib, "nvmlInit_v2", None) or getattr(lib, "nvmlInit")
             init_fn.restype = ctypes.c_int
             if init_fn() != 0:
-                self._failed = True
+                self._defer_retry()
                 return False
+            # Store only after successful init: every later failure must release it.
+            self._lib = lib
 
             get_handle = (
                 getattr(lib, "nvmlDeviceGetHandleByIndex_v2", None)
@@ -145,15 +192,9 @@ class NvmlReader:
                     get_uuid_fn.restype = ctypes.c_int
                     rc = get_uuid_fn(str(target).encode("utf-8"), ctypes.byref(handle))
                 if rc != 0:
-                    if mode == "explicit_uuid":
-                        self._failed = True
-                        return False
-                    handle = ctypes.c_void_p()
-                    rc = get_handle(ctypes.c_uint(0), ctypes.byref(handle))
-                    if rc == 0:
-                        resolved_idx = 0
-                if rc != 0:
-                    self._failed = True
+                    # UUIDs identify physical/MIG devices, not remapped CUDA indices.
+                    # Reporting GPU 0 here would silently report a different device.
+                    self._defer_retry()
                     return False
                 get_idx_fn = getattr(lib, "nvmlDeviceGetIndex", None)
                 if resolved_idx is None and get_idx_fn is not None:
@@ -174,7 +215,7 @@ class NvmlReader:
                     if rc == 0:
                         resolved_idx = 0
                 if rc != 0:
-                    self._failed = True
+                    self._defer_retry()
                     return False
 
             lib.nvmlDeviceGetName.restype = ctypes.c_int
@@ -193,7 +234,7 @@ class NvmlReader:
             self._initialized = True
             return True
         except Exception:
-            self._failed = True
+            self._defer_retry()
             return False
 
     def snapshot(self) -> Dict[str, Any]:
@@ -207,39 +248,26 @@ class NvmlReader:
                 return dict(self._last_payload)
 
             if not self._ensure_init():
-                payload: Dict[str, Any] = {
-                    "ok": False,
-                    "available": False,
-                    "metrics_mode": "unavailable",
-                    "device_index": None,
-                    "gpu_name": "Unavailable",
-                    "gpu_util": 0,
-                    "mem_util": 0,
-                    "vram_used_mib": 0,
-                    "vram_total_mib": 0,
-                    "temp_c": 0,
-                    "power_w": 0.0,
-                }
-                self._last_ts = now
-                self._last_payload = payload
-                return dict(payload)
+                return self._unavailable_snapshot(now)
 
             lib = self._lib
             handle = self._handle
 
             util = _NvmlUtilization()
-            gpu_util = 0
-            mem_util = 0
-            if lib.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) == 0:
-                gpu_util = int(util.gpu)
-                mem_util = int(util.memory)
-
             mem = _NvmlMemory()
-            vram_used_mib = 0
-            vram_total_mib = 0
-            if lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) == 0:
-                vram_used_mib = int(mem.used // (1024 * 1024))
-                vram_total_mib = int(mem.total // (1024 * 1024))
+            try:
+                util_rc = lib.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util))
+                mem_rc = lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem))
+            except Exception:
+                util_rc = mem_rc = -1
+            if util_rc != 0 or mem_rc != 0 or mem.total == 0:
+                # A lost device / stale handle is not a valid idle GPU reading.
+                self._defer_retry()
+                return self._unavailable_snapshot(now)
+            gpu_util = int(util.gpu)
+            mem_util = int(util.memory)
+            vram_used_mib = int(mem.used // (1024 * 1024))
+            vram_total_mib = int(mem.total // (1024 * 1024))
 
             temp_c = ctypes.c_uint(0)
             temp_val = 0
@@ -275,6 +303,7 @@ class NvmlReader:
 
 
 _DEFAULT_READER = NvmlReader()
+atexit.register(_DEFAULT_READER.close)
 
 
 def get_gpu_telemetry() -> Dict[str, Any]:

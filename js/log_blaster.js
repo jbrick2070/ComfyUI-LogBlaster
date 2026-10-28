@@ -5,15 +5,23 @@
  * - Automatically pops open (or wakes without reloading) the WebGL2 GPU Shader
  *   Log HUD window whenever a workflow starts running (both via UI Queue Prompt
  *   and external/headless API runs).
- * - Bridges human-readable node titles from `app.graph` over BroadcastChannel
- *   so the HUD displays real node titles alongside blasting logs.
+ * - Sends submitted workflow titles with their prompt ID over BroadcastChannel
+ *   so other open ComfyUI tabs cannot relabel the executing workflow.
  */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const STORAGE_AUTO_KEY = "logblaster.autoOpen";
-const HUD_URL = "/logblaster";
-const WINDOW_NAME = "ComfyUILogBlasterHUD";
+function resolveHudUrl() {
+  try {
+    if (typeof api.fileURL === "function") return api.fileURL("/logblaster");
+  } catch (_) {}
+  return `${String(api.api_base || "").replace(/\/$/, "")}/logblaster`;
+}
+const HUD_URL = resolveHudUrl();
+const SERVER_BASE = new URL(HUD_URL, window.location.href).pathname.replace(/\/logblaster\/?$/, "");
+const WINDOW_NAME = "ComfyUILogBlasterHUD" + (SERVER_BASE ? `:${SERVER_BASE}` : "");
+const promptNodeMaps = new Map();
 
 let popupRef = null;
 let lastPongMs = 0;
@@ -41,28 +49,47 @@ function setAutoOpenEnabled(enabled) {
   }
 }
 
+function isHudPopup(ref) {
+  try {
+    if (!ref || ref.closed) return false;
+    const current = new URL(ref.location.href, window.location.href);
+    const expected = new URL(HUD_URL, window.location.href);
+    return current.origin === expected.origin && current.pathname === expected.pathname;
+  } catch (_) {
+    return false;
+  }
+}
+
 function isHudWindowAlive() {
-  if (popupRef && !popupRef.closed) return true;
+  if (popupRef && !popupRef.closed) return isHudPopup(popupRef);
   if (Date.now() - lastPongMs < 3800) return true;
   if (dockEl && document.body.contains(dockEl)) return true;
   return false;
 }
 
-function publishGraphNodeTitles(replace = true) {
-  if (!bus) return;
-  try {
-    const rawNodes = app?.graph?.nodes || app?.graph?._nodes;
-    if (!Array.isArray(rawNodes)) return;
-    const map = {};
-    for (const n of rawNodes) {
-      if (n && n.id !== undefined) {
-        map[String(n.id)] = String(n.title || n.comfyClass || n.type || `Node ${n.id}`);
-      }
+function snapshotPromptNodeTitles(prompt) {
+  const map = Object.create(null);
+  for (const n of prompt?.workflow?.nodes || []) {
+    if (n && n.id !== undefined) {
+      map[String(n.id)] = String(n.title || n.type || `Node ${n.id}`);
     }
-    bus.postMessage({ type: "node_map", replace: Boolean(replace), nodes: map });
-  } catch (_) {
-    // Non-fatal
   }
+  for (const [id, n] of Object.entries(prompt?.output || {})) {
+    map[id] = String(n?._meta?.title || map[id] || n?.class_type || `Node ${id}`);
+  }
+  return map;
+}
+
+function publishPromptNodeTitles(promptId, nodes) {
+  if (!bus) return;
+  bus.postMessage({ type: "node_map", prompt_id: promptId, replace: true, nodes });
+}
+
+function rememberPromptNodeTitles(promptId, nodes) {
+  if (typeof promptId !== "string" || !promptId || !nodes) return;
+  promptNodeMaps.set(promptId, nodes);
+  while (promptNodeMaps.size > 32) promptNodeMaps.delete(promptNodeMaps.keys().next().value);
+  publishPromptNodeTitles(promptId, nodes);
 }
 
 function closeEmbeddedDock() {
@@ -154,8 +181,6 @@ function openEmbeddedDock() {
 }
 
 function openLogBlasterWindow(focusIfOpen = false) {
-  publishGraphNodeTitles(true);
-
   if (isHudWindowAlive()) {
     try { bus?.postMessage({ type: "wake", ts: Date.now() }); } catch (_) {}
     if (focusIfOpen && popupRef && !popupRef.closed) {
@@ -184,8 +209,7 @@ function openLogBlasterWindow(focusIfOpen = false) {
   if (opened) {
     popupRef = opened;
     try {
-      const curHref = opened.location?.href || "";
-      if (!curHref || curHref === "about:blank") {
+      if (!isHudPopup(opened)) {
         opened.location.href = HUD_URL;
       } else {
         try { bus?.postMessage({ type: "wake", ts: Date.now() }); } catch (_) {}
@@ -197,7 +221,6 @@ function openLogBlasterWindow(focusIfOpen = false) {
       try { opened.location.href = HUD_URL; } catch (_) {}
     }
     closeEmbeddedDock();
-    setTimeout(() => publishGraphNodeTitles(true), 500);
   } else {
     // Popup blocked (e.g. external API trigger without user gesture) -> show sleek embedded HUD dock
     openEmbeddedDock();
@@ -205,7 +228,6 @@ function openLogBlasterWindow(focusIfOpen = false) {
 }
 
 function requestExternalRunAutoOpen() {
-  publishGraphNodeTitles(true);
   if (!isAutoOpenEnabled() || isHudWindowAlive()) return;
   try { bus?.postMessage({ type: "ping" }); } catch (_) {}
   if (autoOpenGraceTimer) return;
@@ -298,14 +320,16 @@ app.registerExtension({
   name: "ComfyUI.LogBlaster",
   async setup() {
     try {
-      bus = new BroadcastChannel("comfy-logblaster-bus");
+      bus = new BroadcastChannel(`comfy-logblaster-bus:${SERVER_BASE}`);
       bus.addEventListener("message", (ev) => {
         const msgType = ev.data?.type;
         if (msgType === "pong") {
           lastPongMs = Date.now();
         } else if (msgType === "hello") {
           lastPongMs = Date.now();
-          publishGraphNodeTitles(true);
+          try {
+            for (const [promptId, nodes] of promptNodeMaps) publishPromptNodeTitles(promptId, nodes);
+          } catch (_) {}
         }
       });
       bus.postMessage({ type: "ping" });
@@ -323,21 +347,25 @@ app.registerExtension({
       const origQueuePrompt = api.queuePrompt.bind(api);
       api._logBlasterWrapped = true;
       api.queuePrompt = async function (...args) {
+        let nodes = null;
+        try { nodes = snapshotPromptNodeTitles(args[1]); } catch (_) {}
         try {
           if (isAutoOpenEnabled()) {
             openLogBlasterWindow(false);
-          } else {
-            publishGraphNodeTitles(true);
           }
         } catch (_) {
           // Never prevent workflow submission
         }
-        return origQueuePrompt(...args);
+        const result = await origQueuePrompt(...args);
+        try { rememberPromptNodeTitles(result?.prompt_id, nodes); } catch (_) {}
+        return result;
       };
     }
 
     // Catch external/headless API runs while ComfyUI UI is open.
-    // Execution events themselves reach /logblaster directly over /ws via _install_observer_tap.
+    // Events ComfyUI actually emits reach /logblaster over /ws via _install_observer_tap.
+    // Without client_id, core can omit executing/terminal events; broadcast status/progress
+    // still provide observed timing for those submissions.
     api.addEventListener("execution_start", () => {
       requestExternalRunAutoOpen();
     });

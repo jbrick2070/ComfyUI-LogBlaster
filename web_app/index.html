@@ -162,6 +162,52 @@
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
   }
   #toastMsg.visible { opacity: 1; }
+  .dock-more { position: relative; }
+  .dock-more summary { cursor: pointer; padding: 4px 7px; color: #cbe8f6; }
+  .dock-more-tools {
+    position: absolute;
+    bottom: calc(100% + 10px);
+    right: 0;
+    display: flex;
+    gap: 6px;
+    padding: 8px;
+    white-space: nowrap;
+    background: #08121c;
+    border: 1px solid var(--hud-border);
+    border-radius: 8px;
+  }
+  #helpDialog {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    width: min(680px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    padding: 22px;
+    background: #08121c;
+    color: var(--hud-text);
+    border: 1px solid var(--hud-accent);
+    border-radius: 12px;
+    font: 13px/1.6 "Cascadia Mono", "Consolas", monospace;
+  }
+  #helpDialog::backdrop { background: rgba(0, 0, 0, 0.7); }
+  #helpDialog h2 { font-size: 17px; color: var(--hud-accent); }
+  #helpDialog p { margin: 10px 0; }
+  #helpDialog dl { display: grid; grid-template-columns: 110px 1fr; gap: 5px 14px; }
+  #helpDialog dt { color: var(--hud-accent); font-weight: bold; }
+  #helpDialog kbd { color: #fff; }
+  #btnHelpClose { float: right; }
+  @media (max-width: 900px) {
+    #controlDock { left: 8px; right: 8px; bottom: 8px; gap: 5px; padding: 6px; opacity: 0.92; }
+    .dock-group { flex-wrap: wrap; max-width: 100%; gap: 3px; padding-right: 4px; }
+    button.hud-btn, .dock-more summary { font-size: 10px; padding: 4px 5px; }
+    input.hud-filter { width: 78px; }
+    input.hud-filter:focus { width: 110px; }
+    input[type="range"].fx-slider { width: 48px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; }
+  }
 </style>
 </head>
 <body>
@@ -192,14 +238,39 @@
     <button class="hud-btn is-active" id="btnRedact" title="Toggle token & home-path redaction for safe streaming/copying">REDACT: ON</button>
   </div>
   <div class="dock-group">
-    <button class="hud-btn" id="btnFontDown" title="Smaller Log Text (Hotkey: -)">A-</button>
-    <button class="hud-btn" id="btnFontUp" title="Larger Log Text (Hotkey: +)">A+</button>
     <button class="hud-btn" id="btnPause" title="Pause / Resume Auto-Scroll (Hotkey: Space)">LIVE</button>
     <button class="hud-btn blast-btn" id="btnTestBlast" title="Fire synthetic ComfyUI log storm to test shaders & audio (Hotkey: B)">TEST BLAST</button>
-    <button class="hud-btn" id="btnCopy" title="Copy logs to clipboard (respects REDACT toggle)">COPY</button>
+    <details class="dock-more" id="dockMore">
+      <summary title="Text size and copy controls">MORE</summary>
+      <div class="dock-more-tools" id="dockMoreTools">
+        <button class="hud-btn" id="btnFontDown" title="Smaller Log Text (Hotkey: -)">A-</button>
+        <button class="hud-btn" id="btnFontUp" title="Larger Log Text (Hotkey: +)">A+</button>
+        <button class="hud-btn" id="btnCopy" title="Copy logs to clipboard (respects REDACT toggle)">COPY</button>
+      </div>
+    </details>
     <button class="hud-btn" id="btnFullscreen" title="Toggle Fullscreen (Hotkey: F)">FULL</button>
+    <button class="hud-btn" id="btnHelp" aria-label="Open LogBlaster help" title="Help (Hotkey: ? or H)">?</button>
   </div>
 </div>
+<dialog id="helpDialog" aria-labelledby="helpTitle">
+  <button class="hud-btn" id="btnHelpClose" aria-label="Close help">CLOSE</button>
+  <h2 id="helpTitle">LogBlaster quick guide</h2>
+  <p>Watch ComfyUI logs live. Try <strong>TEST BLAST</strong> for a short demo. Scroll up to hold history; press Space to resume.</p>
+  <dl>
+    <dt>1–4</dt><dd>Choose CRT, CYBER, SCOPE or ARCADE shaders</dd>
+    <dt>V</dt><dd>Cycle CASCADE (large live line), DUAL (hero + history), DRUM (curved history), FLAT (uniform text)</dd>
+    <dt>T / Y</dt><dd>Cycle tint / toggle Comfy black and yellow</dd>
+    <dt>/ / Escape</dt><dd>Focus filter / clear filter while typing</dd>
+    <dt>E / Space</dt><dd>Jump to errors / pause or resume scrolling</dd>
+    <dt>− / +</dt><dd>Adjust text size; MORE also contains COPY</dd>
+    <dt>M / A</dt><dd>Toggle synth / capture system or tab audio</dd>
+    <dt>Shift+A</dt><dd>Capture microphone (also Shift+Click AUDIO)</dd>
+    <dt>B / F</dt><dd>Test blast / fullscreen</dd>
+    <dt>? / H / Escape</dt><dd>Open or close help / close this guide</dd>
+  </dl>
+  <p><strong>Audio:</strong> SYS and MIC are silent analyser taps: zero echo. FILE (drop an audio file) and SYNTH play through your speakers. Click AUDIO again to stop its input.</p>
+  <p>Your system’s reduced-motion setting caps FX at 60% and disables moving distortions and animated scrolling. The FX slider can lower it further.</p>
+</dialog>
 
 <script>
 (() => {
@@ -243,6 +314,8 @@
   }
 
   const params = new URLSearchParams(location.search);
+  const serverBase = location.pathname.replace(/\/logblaster\/?$/, "");
+  function serverUrl(path) { return serverBase + path; }
   const preferHighGpu = params.get("gpu") === "high";
 
   function resolveInitialPreset() {
@@ -290,19 +363,26 @@
     return VIEW_MODES.includes(saved) ? saved : "CASCADE";
   }
 
+  let reducedMotionQuery = null;
+  try { reducedMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null; } catch (_) {}
+  function clampFx(value, reducedMotion) {
+    return Math.max(0, Math.min(reducedMotion ? 0.6 : 1.6, Number.isFinite(value) ? value : 1));
+  }
+
   const state = {
     preset: resolveInitialPreset(),
     viewMode: resolveInitialViewMode(),
     tintMode: resolveInitialTintMode(),
-    fxIntensity: params.get("fx") !== null
-      ? Math.max(0, Math.min(1.6, Number(params.get("fx")) / 100.0))
-      : Number(storageGet("logblaster.fx", "100")) / 100.0,
+    reducedMotion: Boolean(reducedMotionQuery?.matches),
+    fxIntensity: clampFx(Number(params.get("fx") ?? storageGet("logblaster.fx", "100")) / 100,
+      Boolean(reducedMotionQuery?.matches)),
     fpsMode: resolveInitialFpsMode(),
     redactEnabled: params.get("redact") !== null
       ? params.get("redact") !== "0"
       : storageGet("logblaster.redact", "1") !== "0",
     fontSize: Math.min(22, Math.max(11, Number(storageGet("logblaster.fontSize", "14")) || 14)),
     paused: false,
+    pausedAnchorId: null,
     scrollBackLines: 0,
     filterQuery: "",
 
@@ -316,6 +396,9 @@
 
     // Live ComfyUI connection + execution state
     wsConnected: false,
+    wsEverConnected: false,
+    wsDisconnectedAtMs: performance.now(),
+    wsReconnectAtMs: 0,
     logSubscribed: false,
     logSubAttempted: false,
     logStreamAvailable: true,
@@ -333,6 +416,10 @@
     runStartMs: 0,
     lastElapsedSec: 0,
     activeNodeId: null,
+    activePromptId: null,
+    executionUncertain: false,
+    promptNodeMaps: new Map(),
+    completedPromptIds: new Set(),
     activeNodeTitle: "Waiting for workflow...",
     nodeTitleMap: new Map(),
     stepVal: 0,
@@ -381,6 +468,7 @@
     waveWriteIdx: 0,
 
     // Hardware telemetry & WebGL2 health
+    lastTelemetryOkMs: null,
     gpuTelemetry: {
       available: false,
       metrics_mode: "nvml", // nvml | vram_only | unavailable
@@ -411,19 +499,23 @@
       .replace(/\b(hf_[A-Za-z0-9]{3})[A-Za-z0-9]{12,}\b/g, "$1***REDACTED***")
       .replace(/\b(AIza[0-9A-Za-z_-]{3})[0-9A-Za-z_-]{16,}\b/g, "$1***REDACTED***")
       .replace(/\b(AKIA)[0-9A-Z]{16}\b/g, "$1***REDACTED***")
-      .replace(/(Authorization\s*:\s*Bearer\s+)([^\s"',;&]{1,})/gi, "$1***REDACTED***")
+      .replace(/(\bAuthorization["']?\s*:\s*["']?(?:Bearer|Basic|Token|ApiKey)\s+)([^\s"',;&]{1,})/gi, "$1***REDACTED***")
       .replace(/(\bBearer\s+)([^\s"',;&]{4,})/gi, "$1***REDACTED***")
-      .replace(/(\b(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password)\s*[:=]\s*)(["']?)[^\s"',;&]{1,}\2/gi, "$1$2***REDACTED***$2")
-      .replace(/((?:https?|wss?|ftp|redis|postgres(?:ql)?|mysql|amqp|mongodb(?:\+srv)?):\/\/[^/\s"':@]+:)([^@\s"']+)(@)/gi, "$1***REDACTED***$3")
-      .replace(/[A-Za-z]:\\Users\\[^\\\s"']+\\/gi, "~\\")
-      .replace(/[A-Za-z]:\/Users\/[^/\s"']+\//gi, "~/")
-      .replace(/\/(?:Users|home)\/[^/\s"']+\//g, "~/");
+      .replace(/((?<![A-Za-z0-9])(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password)["']?\s*[:=]\s*)("(?:\\.|[^"\\])*(?:"|(?:\\)?$)|'(?:\\.|[^'\\])*(?:'|(?:\\)?$)|[^\s"',;&\x7d\]]+)/gi,
+        (_, key, value) => {
+          const quote = /^["']/.test(value) ? value[0] : "";
+          return key + quote + "***REDACTED***" + quote;
+        })
+      .replace(/((?:https?|wss?|ftp|redis|postgres(?:ql)?|mysql|amqp|mongodb(?:\+srv)?):\/\/[^/\s"':@]*:)([^@\s"']+)(@)/gi, "$1***REDACTED***$3")
+      .replace(/[A-Za-z]:\\Users\\[^\\\s"']+(\\)?/gi, (_, separator) => "~" + (separator || ""))
+      .replace(/[A-Za-z]:\/Users\/[^/\s"']+(\/)?/gi, (_, separator) => "~" + (separator || ""))
+      .replace(/\/(?:Users|home)\/[^/\s"']+(\/)?/g, (_, separator) => "~" + (separator || ""));
     if (isPartial) {
       // Mask ambiguous trailing token prefixes or incomplete URL userinfo while a partial line is still arriving
       out = out
         .replace(/\b(sk-[A-Za-z0-9_-]{0,3}|gh[pousr]_[A-Za-z0-9]{0,3}|hf_[A-Za-z0-9]{0,3}|AIza[0-9A-Za-z_-]{0,3}|AKIA)[A-Za-z0-9_-]*$/g, "$1***REDACTED***")
         .replace(/(\bBearer\s+)([^\s"',;&]{1,3})$/gi, "$1***REDACTED***")
-        .replace(/((?:https?|wss?|ftp|redis|postgres(?:ql)?|mysql|amqp|mongodb(?:\+srv)?):\/\/[^/\s"':@]+:)([^@\s"']*)$/gi, "$1***REDACTED***");
+        .replace(/((?:https?|wss?|ftp|redis|postgres(?:ql)?|mysql|amqp|mongodb(?:\+srv)?):\/\/[^/\s"':@]*:)([^@\s"']*)$/gi, "$1***REDACTED***");
     }
     return out;
   }
@@ -444,6 +536,38 @@
   let timeBuf = null;
   let lastTickSoundMs = 0;
 
+  function syncSynthVisibility() {
+    state.blastRate = 0;
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    const audible = !document.hidden && state.synthEnabled;
+    if (droneGain) {
+      droneGain.gain.cancelScheduledValues(t);
+      if (audible) {
+        // Start from silence; the next analysis frame supplies a fresh target.
+        droneGain.gain.setValueAtTime(0, t);
+      } else {
+        droneGain.gain.setValueAtTime(droneGain.gain.value, t);
+        droneGain.gain.linearRampToValueAtTime(0, t + 0.04);
+      }
+    }
+    if (droneOsc) {
+      droneOsc.frequency.cancelScheduledValues(t);
+      droneOsc.frequency.setValueAtTime(55, t);
+    }
+    if (synthMasterGain) {
+      synthMasterGain.gain.cancelScheduledValues(t);
+      synthMasterGain.gain.setValueAtTime(synthMasterGain.gain.value, t);
+      synthMasterGain.gain.linearRampToValueAtTime(
+        audible ? 0.24 : 0, t + 0.04
+      );
+    }
+    // FILE audio shares the context but has its own audible path; leave it playing.
+    if (!document.hidden && state.synthEnabled && audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+    }
+  }
+
   function ensureAudioGraph() {
     if (audioCtx) {
       if (audioCtx.state === "suspended") audioCtx.resume();
@@ -462,7 +586,7 @@
     timeBuf = new Uint8Array(analyser.frequencyBinCount);
 
     synthMasterGain = audioCtx.createGain();
-    synthMasterGain.gain.value = 0.24;
+    synthMasterGain.gain.value = document.hidden ? 0 : 0.24;
     // Audible internal synth connects to BOTH analyser and destination
     synthMasterGain.connect(analyser);
     synthMasterGain.connect(audioCtx.destination);
@@ -482,7 +606,7 @@
   }
 
   function playSynthTick(kind, energy) {
-    if (!state.synthEnabled || !audioCtx || !synthMasterGain) return;
+    if (document.hidden || !state.synthEnabled || !audioCtx || !synthMasterGain) return;
     const nowMs = performance.now();
     if (kind === "normal" && nowMs - lastTickSoundMs < 34) return;
     lastTickSoundMs = nowMs;
@@ -702,7 +826,7 @@
   function updateAudioAnalysis(nowMs, dtSec) {
     state.audioActive = state.synthEnabled || state.audioInMode !== "OFF";
 
-    if (state.synthEnabled && droneGain && audioCtx) {
+    if (!document.hidden && state.synthEnabled && droneGain && audioCtx) {
       const targetDrone = Math.min(0.18, state.blastRate * 0.11 + (state.runState === "BLASTING" ? 0.045 : 0.0));
       droneGain.gain.setTargetAtTime(targetDrone, audioCtx.currentTime, 0.08);
       if (droneOsc) {
@@ -789,6 +913,46 @@
   const btnErrJump = document.getElementById("btnErrJump");
   const btnRedact = document.getElementById("btnRedact");
   const btnPause = document.getElementById("btnPause");
+  const controlDock = document.getElementById("controlDock");
+  const dockMore = document.getElementById("dockMore");
+  const dockMoreTools = document.getElementById("dockMoreTools");
+  dockMore.addEventListener("toggle", () => { state.textDirty = true; });
+  const helpDialog = document.getElementById("helpDialog");
+  const btnHelp = document.getElementById("btnHelp");
+  let helpReturnFocus = null;
+
+  function setHelpOpen(open) {
+    if (open) {
+      if (helpDialog.open) return;
+      helpReturnFocus = document.activeElement;
+      if (typeof helpDialog.showModal === "function") helpDialog.showModal();
+      else helpDialog.open = true;
+      storageSet("logblaster.helpSeen", "1");
+    } else {
+      if (typeof helpDialog.close === "function") helpDialog.close();
+      else helpDialog.open = false;
+      helpReturnFocus?.focus?.();
+    }
+  }
+  btnHelp.addEventListener("click", () => setHelpOpen(!helpDialog.open));
+  document.getElementById("btnHelpClose").addEventListener("click", () => setHelpOpen(false));
+
+  function applyMotionPreference() {
+    state.reducedMotion = Boolean(reducedMotionQuery?.matches);
+    state.fxIntensity = clampFx(state.fxIntensity, state.reducedMotion);
+    if (state.reducedMotion) {
+      state.degaussWobble = 0;
+      state.glitchBurst = 0;
+      state.smoothScrollPx = 0;
+      state.shockwaveTime = -10;
+    }
+    syncControlsUI();
+  }
+  if (reducedMotionQuery?.addEventListener) reducedMotionQuery.addEventListener("change", applyMotionPreference);
+  else reducedMotionQuery?.addListener?.(applyMotionPreference);
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => { state.textDirty = true; }).observe(controlDock);
+  }
 
   let cachedFilterVersion = -1;
   let cachedFilterQuery = "";
@@ -858,6 +1022,10 @@
     btnTint.textContent = "TINT: " + TINT_NAMES[state.tintMode];
     btnTint.classList.toggle("is-active", state.tintMode === 1);
     fxSlider.value = String(Math.round(state.fxIntensity * 100));
+    fxSlider.max = state.reducedMotion ? "60" : "160";
+    fxSlider.title = state.reducedMotion
+      ? "Reduced motion: FX capped at 60%; moving distortions disabled"
+      : "GPU Shader Intensity (0% raw fast-blit -> 160% overdrive)";
     btnFps.textContent = `FPS: ${state.fpsMode}`;
 
     btnErrJump.textContent = `ERR: ${state.errorCount}`;
@@ -910,6 +1078,7 @@
   btnSynth.addEventListener("click", () => {
     ensureAudioGraph();
     state.synthEnabled = !state.synthEnabled;
+    syncSynthVisibility();
     state.audioActive = state.synthEnabled || state.audioInMode !== "OFF";
     syncControlsUI();
     if (state.synthEnabled) {
@@ -941,9 +1110,9 @@
   });
 
   fxSlider.addEventListener("input", () => {
-    state.fxIntensity = Number(fxSlider.value) / 100.0;
-    storageSet("logblaster.fx", fxSlider.value);
-    state.textDirty = true;
+    state.fxIntensity = clampFx(Number(fxSlider.value) / 100, state.reducedMotion);
+    storageSet("logblaster.fx", Math.round(state.fxIntensity * 100));
+    syncControlsUI();
   });
 
   btnFps.addEventListener("click", () => {
@@ -960,6 +1129,7 @@
   filterInput.addEventListener("input", () => {
     state.filterQuery = filterInput.value || "";
     state.scrollBackLines = 0;
+    capturePauseAnchor();
     state.textDirty = true;
   });
 
@@ -968,10 +1138,28 @@
       filterInput.value = "";
       state.filterQuery = "";
       state.scrollBackLines = 0;
+      capturePauseAnchor();
       filterInput.blur();
       state.textDirty = true;
     }
   });
+
+  function capturePauseAnchor() {
+    const lines = getFilteredLines();
+    const end = Math.max(0, lines.length - state.scrollBackLines);
+    state.pausedAnchorId = state.paused && end > 0 ? lines[end - 1].id : null;
+  }
+
+  function getViewEndIndex(lines) {
+    if (!state.paused) return lines.length;
+    if (state.pausedAnchorId === null) return 0;
+    const index = lines.findIndex((line) => line.id === state.pausedAnchorId);
+    // If history evicted the anchor, hold the oldest remaining line.
+    const end = index >= 0 ? index + 1 : Math.min(1, lines.length);
+    if (index < 0 && end) state.pausedAnchorId = lines[0].id;
+    state.scrollBackLines = lines.length - end;
+    return end;
+  }
 
   function jumpToNextError() {
     const activeList = getFilteredLines();
@@ -990,6 +1178,7 @@
     const fromEnd = Math.max(0, activeList.length - 1 - targetIdx - marginFromBottom);
     state.paused = true;
     state.scrollBackLines = Math.min(Math.max(0, activeList.length - 1), fromEnd);
+    capturePauseAnchor();
     state.flashPulse = 0.55;
     syncControlsUI();
     showToast(`ERROR ${state.errCursorIdx + 1}/${errIndices.length}: ${activeList[targetIdx].viewRaw.slice(0, 52)}`);
@@ -1000,7 +1189,7 @@
   btnRedact.addEventListener("click", () => {
     state.redactEnabled = !state.redactEnabled;
     storageSet("logblaster.redact", state.redactEnabled ? "1" : "0");
-    // Rebuild display spans from stored raw source so redaction toggles cleanly in ~3ms
+    // Rebuild display spans from stored raw source when redaction changes.
     for (const line of state.lines) {
       rebuildLineView(line);
     }
@@ -1026,6 +1215,7 @@
   btnPause.addEventListener("click", () => {
     state.paused = !state.paused;
     if (!state.paused) state.scrollBackLines = 0;
+    capturePauseAnchor();
     syncControlsUI();
   });
 
@@ -1050,6 +1240,7 @@
 
   window.addEventListener("wheel", (ev) => {
     const activeList = getFilteredLines();
+    if (state.paused) getViewEndIndex(activeList);
     const deltaLines = Math.sign(ev.deltaY) * 4;
     if (deltaLines < 0) {
       state.paused = true;
@@ -1061,11 +1252,32 @@
       state.scrollBackLines = Math.max(0, state.scrollBackLines - deltaLines);
       if (state.scrollBackLines === 0) state.paused = false;
     }
+    capturePauseAnchor();
     syncControlsUI();
   }, { passive: true });
 
   window.addEventListener("keydown", (ev) => {
-    if (ev.target && ev.target.tagName === "INPUT") return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+    if (helpDialog.open && ev.key === "Escape") {
+      ev.preventDefault();
+      setHelpOpen(false);
+      return;
+    }
+    if (helpDialog.open) {
+      // H/? can close help while its Close button has focus; other control keys stay native.
+      if (!ev.target?.isContentEditable && !/^(INPUT|TEXTAREA|SELECT)$/.test(ev.target?.tagName || "") &&
+          (ev.key === "?" || ev.key.toLowerCase() === "h")) {
+        ev.preventDefault();
+        setHelpOpen(false);
+      }
+      return;
+    }
+    if (ev.target?.isContentEditable || /^(INPUT|TEXTAREA|BUTTON|SELECT|SUMMARY|A)$/.test(ev.target?.tagName || "")) return;
+    if (ev.key === "?" || ev.key.toLowerCase() === "h") {
+      ev.preventDefault();
+      setHelpOpen(!helpDialog.open);
+      return;
+    }
     if (ev.key === "/") {
       ev.preventDefault();
       filterInput.focus();
@@ -1098,6 +1310,7 @@
   };
 
   function triggerShockwave(cx = 0.5, cy = 0.48) {
+    if (state.reducedMotion) return;
     state.shockwaveTime = performance.now() * 0.001;
     state.shockwaveCenter = [cx, cy];
     state.textDirty = true;
@@ -1149,7 +1362,7 @@
       return { color: "#4df3ff", kind: "shock", energy: 0.9 };
     }
     if (/\[LogBlaster:GLITCH_BURST\]/i.test(plain)) {
-      if (triggerFx) state.glitchBurst = 1.0;
+      if (triggerFx && !state.reducedMotion) state.glitchBurst = 1.0;
       return { color: "#ff3e7f", kind: "error", energy: 1.0 };
     }
     if (/\[LogBlaster:PHOSPHOR_FLASH\]/i.test(plain)) {
@@ -1157,7 +1370,7 @@
       return { color: "#fff3a1", kind: "complete", energy: 0.95 };
     }
     if (/(\[ERROR\]|Traceback|Exception:|RenderError|CUDA out of memory|\bFAILED\b)/i.test(plain)) {
-      if (triggerFx) state.glitchBurst = Math.max(state.glitchBurst, 0.85);
+      if (triggerFx && !state.reducedMotion) state.glitchBurst = Math.max(state.glitchBurst, 0.85);
       return { color: "#ff4769", kind: "error", energy: 1.0 };
     }
     if (/(\[WARNING\]|\bWARN\b|UserWarning|FutureWarning)/i.test(plain)) {
@@ -1298,6 +1511,7 @@
 
     if (replaceLast && state.lines.length > 0) {
       const prev = state.lines[state.lines.length - 1];
+      entry.id = prev.id;
       const prevKind = prev.kind;
       entry.ts = now - 110;
       entry._smoothH = prev._smoothH || 0;
@@ -1315,7 +1529,7 @@
         const impulse = (state.viewMode === "CASCADE" || state.viewMode === "DRUM")
           ? state.fontSize * 3.45
           : state.fontSize * 1.38;
-        state.smoothScrollPx = Math.min(280, state.smoothScrollPx + impulse);
+        state.smoothScrollPx = state.reducedMotion ? 0 : Math.min(280, state.smoothScrollPx + impulse);
         state.newestLineMs = now;
       }
       if (state.lines.length > MAX_LINES) {
@@ -1374,7 +1588,7 @@
     const impulse = (state.viewMode === "CASCADE" || state.viewMode === "DRUM")
       ? state.fontSize * 3.45
       : state.fontSize * 1.38;
-    state.smoothScrollPx = Math.min(280, state.smoothScrollPx + impulse);
+    state.smoothScrollPx = state.reducedMotion ? 0 : Math.min(280, state.smoothScrollPx + impulse);
     state.newestLineMs = now;
 
     if (state.lines.length > MAX_LINES) {
@@ -1454,7 +1668,16 @@
   let telemetryTimer = null;
   let rateTimer = null;
   let demoTimers = [];
+  let demoActive = false;
+  let demoGeneration = 0;
   const recentEventSigs = new Map();
+
+  function cancelTestBlast() {
+    demoGeneration++;
+    demoActive = false;
+    demoTimers.forEach(clearTimeout);
+    demoTimers = [];
+  }
 
   async function fetchWithTimeout(url, options = {}, timeoutMs = 4000, parentAbort = null) {
     const ctrl = typeof AbortController === "function" ? new AbortController() : null;
@@ -1522,6 +1745,68 @@
     return result;
   }
 
+  function receiveNodeMap(message) {
+    if (typeof message.prompt_id !== "string" || !message.prompt_id) return;
+    const map = new Map(Object.entries(message.nodes).slice(0, 10000)
+      .map(([id, title]) => [String(id), String(title)]));
+    state.promptNodeMaps.set(message.prompt_id, map);
+    if (state.promptNodeMaps.size > 32) {
+      state.promptNodeMaps.delete(state.promptNodeMaps.keys().next().value);
+    }
+    if (message.prompt_id === state.activePromptId) {
+      state.nodeTitleMap = map;
+      if (state.activeNodeId && state.runState === "BLASTING") {
+        state.activeNodeTitle = resolveNodeTitle(state.activeNodeId);
+        state.textDirty = true;
+      }
+    }
+  }
+
+  function beginRun(promptId, now) {
+    cancelTestBlast();
+    state.executionUncertain = false;
+    state.activePromptId = promptId ? String(promptId) : null;
+    state.nodeTitleMap = state.promptNodeMaps.get(state.activePromptId) || new Map();
+    state.activeNodeId = null;
+    state.activeNodeTitle = "Waiting for node...";
+    state.runState = "BLASTING";
+    state.runStartMs = now;
+    state.stepVal = 0;
+    state.stepMax = 0;
+    state.lastStepMs = 0;
+    state.stepRateSmooth = 0;
+    state.textDirty = true;
+  }
+
+  function ensureActiveRun(promptId, now) {
+    if (demoActive || state.executionUncertain || state.runState !== "BLASTING" ||
+        (promptId && state.activePromptId && String(promptId) !== state.activePromptId)) {
+      beginRun(promptId, now);
+    } else if (promptId && !state.activePromptId) {
+      // A reconnect status established an observed start before we knew the prompt ID.
+      state.activePromptId = String(promptId);
+      state.nodeTitleMap = state.promptNodeMaps.get(state.activePromptId) || new Map();
+    }
+  }
+
+  function finishRun(promptId, now, runState, title) {
+    const id = promptId ? String(promptId) : state.activePromptId;
+    // ComfyUI can send a terminal node event after success and the next queue status.
+    if (id && state.completedPromptIds.has(id)) return false;
+    ensureActiveRun(promptId, now);
+    state.lastElapsedSec = Math.max(0, (now - state.runStartMs) / 1000);
+    state.runState = runState;
+    state.activeNodeTitle = title;
+    state.textDirty = true;
+    if (state.activePromptId) {
+      state.completedPromptIds.add(state.activePromptId);
+      if (state.completedPromptIds.size > 32) {
+        state.completedPromptIds.delete(state.completedPromptIds.values().next().value);
+      }
+    }
+    return true;
+  }
+
   function handleComfyEvent(type, data) {
     if (!type || state.shuttingDown) return;
     const now = performance.now();
@@ -1544,11 +1829,8 @@
     }
 
     if (type === "execution_start") {
-      state.runState = "BLASTING";
-      state.runStartMs = now;
-      state.stepVal = 0;
-      state.stepMax = 0;
-      state.degaussWobble = 1.0;
+      beginRun(data?.prompt_id, now);
+      state.degaussWobble = state.reducedMotion ? 0 : 1.0;
       state.flashPulse = 0.85;
       triggerShockwave(0.5, 0.25);
       const pid = String(data?.prompt_id || "").slice(0, 8);
@@ -1556,19 +1838,13 @@
     } else if (type === "executing") {
       const nodeId = data?.node;
       if (nodeId === null || nodeId === undefined) {
-        if (state.runState === "BLASTING") {
-          state.runState = "COMPLETE";
-          if (state.runStartMs) {
-            state.lastElapsedSec = (now - state.runStartMs) / 1000;
-          }
-          state.activeNodeTitle = "Workflow Complete";
+        if (finishRun(data?.prompt_id, now, "COMPLETE", "Workflow Complete")) {
           state.flashPulse = 1.0;
           triggerShockwave(0.5, 0.5);
           playSynthTick("complete", 1.0);
         }
       } else {
-        state.runState = "BLASTING";
-        if (!state.runStartMs) state.runStartMs = now;
+        ensureActiveRun(data?.prompt_id, now);
         state.activeNodeId = String(nodeId);
         state.activeNodeTitle = resolveNodeTitle(nodeId);
         state.nodePulse = 1.0;
@@ -1582,6 +1858,7 @@
       }
       state.textDirty = true;
     } else if (type === "progress") {
+      ensureActiveRun(data?.prompt_id, now);
       if (state.lastStepMs > 0 && Number(data?.value) > state.stepVal) {
         const dt = (now - state.lastStepMs) / 1000;
         if (dt > 0.005 && dt < 30) {
@@ -1599,39 +1876,29 @@
       if (!state.runStartMs) state.runStartMs = now;
       state.textDirty = true;
     } else if (type === "execution_error") {
-      state.runState = "ERROR";
-      state.glitchBurst = 1.0;
+      if (!finishRun(data?.prompt_id, now, "ERROR", "Execution Error")) return;
+      state.glitchBurst = state.reducedMotion ? 0 : 1.0;
       const errNode = data?.node_type || data?.node_id || "unknown";
       const errMsg = data?.exception_message || "Execution error";
       injectLocalLine(`[ERROR] Node ${errNode}: ${errMsg}`);
     } else if (type === "execution_success") {
-      state.runState = "COMPLETE";
-      if (state.runStartMs) {
-        state.lastElapsedSec = (now - state.runStartMs) / 1000;
-      }
-      state.activeNodeTitle = "Workflow Complete";
+      if (!finishRun(data?.prompt_id, now, "COMPLETE", "Workflow Complete")) return;
       state.flashPulse = 1.0;
       triggerShockwave(0.5, 0.5);
       state.textDirty = true;
     } else if (type === "execution_interrupted") {
-      state.runState = "IDLE";
-      state.activeNodeTitle = "Execution Interrupted";
+      if (!finishRun(data?.prompt_id, now, "IDLE", "Execution Interrupted")) return;
       state.flashPulse = Math.max(state.flashPulse, 0.65);
       injectLocalLine("[WARNING] Workflow execution interrupted");
       state.textDirty = true;
     } else if (type === "status") {
       const rem = Number(data?.status?.exec_info?.queue_remaining);
       if (Number.isFinite(rem)) {
-        if (rem > 0 && state.runState !== "BLASTING") {
-          state.runState = "BLASTING";
-          if (!state.runStartMs) state.runStartMs = now;
+        if (rem > 0 && (demoActive || state.runState !== "BLASTING" || state.executionUncertain)) {
+          beginRun(null, now);
           state.textDirty = true;
-        } else if (rem === 0 && state.runState === "BLASTING") {
-          state.runState = "COMPLETE";
-          if (state.runStartMs) {
-            state.lastElapsedSec = (now - state.runStartMs) / 1000;
-          }
-          state.activeNodeTitle = "Workflow Complete";
+        } else if (rem === 0 && state.runState === "BLASTING" && !demoActive) {
+          if (!finishRun(state.activePromptId, now, "COMPLETE", "Workflow Complete")) return;
           state.flashPulse = Math.max(state.flashPulse, 0.85);
           state.textDirty = true;
         }
@@ -1649,7 +1916,7 @@
     // 1. Subscribe FIRST so zero live lines are missed between backfill and subscription
     state.logSubAttempted = true;
     try {
-      const subRes = await fetchWithTimeout("/internal/logs/subscribe", {
+      const subRes = await fetchWithTimeout(serverUrl("/internal/logs/subscribe"), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clientId: state.clientId, enabled: true }),
@@ -1684,7 +1951,7 @@
     const cutoffIso = state.lastLogIsoT;
     const cutoffSeen = new Map(state.seenAtLastIsoT);
     try {
-      const rawRes = await fetchWithTimeout("/internal/logs/raw", { cache: "no-store" }, 4000, syncSignal);
+      const rawRes = await fetchWithTimeout(serverUrl("/internal/logs/raw"), { cache: "no-store" }, 4000, syncSignal);
       if (!state.shuttingDown && gen === state.lifecycleGen && rawRes.ok) {
         const data = await rawRes.json();
         if (!state.shuttingDown && gen === state.lifecycleGen && Array.isArray(data?.entries)) {
@@ -1760,8 +2027,7 @@
     clearInterval(busPongTimer);
     clearInterval(telemetryTimer);
     clearInterval(rateTimer);
-    demoTimers.forEach(clearTimeout);
-    demoTimers = [];
+    cancelTestBlast();
     disconnectExternalAudio();
     if (ws) {
       try { ws.close(); } catch (_) {}
@@ -1776,7 +2042,7 @@
     state.logSubscribed = false;
     state.logSubAttempted = false;
     try {
-      fetch("/internal/logs/subscribe", {
+      fetch(serverUrl("/internal/logs/subscribe"), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clientId: state.clientId, enabled: false }),
@@ -1795,6 +2061,7 @@
     if (state.shuttingDown) return;
     clearTimeout(reconnectTimer);
     const delay = reconnectDelayMs;
+    state.wsReconnectAtMs = performance.now() + delay;
     reconnectDelayMs = Math.min(12000, Math.round(reconnectDelayMs * 2));
     reconnectTimer = setTimeout(connectComfySocket, delay);
   }
@@ -1802,6 +2069,7 @@
   function connectComfySocket() {
     if (state.shuttingDown) return;
     clearTimeout(reconnectTimer);
+    state.wsReconnectAtMs = 0;
     if (activeSyncAbort) {
       try { activeSyncAbort.abort(); } catch (_) {}
     }
@@ -1809,7 +2077,7 @@
     activeSyncAbort = syncCtrl;
     const myGen = ++state.lifecycleGen;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${proto}//${location.host}/ws?clientId=${encodeURIComponent(state.clientId)}`;
+    const wsUrl = `${proto}//${location.host}${serverUrl("/ws")}?clientId=${encodeURIComponent(state.clientId)}`;
 
     let sock;
     try {
@@ -1823,8 +2091,13 @@
     sock.addEventListener("open", () => {
       if (state.shuttingDown || myGen !== state.lifecycleGen) return;
       reconnectDelayMs = 1500;
+      const reconnected = state.wsEverConnected;
       state.wsConnected = true;
+      state.wsEverConnected = true;
+      state.wsDisconnectedAtMs = null;
+      state.wsReconnectAtMs = 0;
       state.textDirty = true;
+      if (reconnected) showToast("COMFYUI RECONNECTED");
       injectLocalLine("[LogBlaster] Connected to ComfyUI live log + event stream (/ws)");
       syncLogsAfterOpen(myGen, syncCtrl ? syncCtrl.signal : null);
     });
@@ -1873,7 +2146,11 @@
         try { syncCtrl.abort(); } catch (_) {}
       }
       if (myGen !== state.lifecycleGen) return;
+      if (state.wsConnected || state.wsDisconnectedAtMs === null) {
+        state.wsDisconnectedAtMs = performance.now();
+      }
       state.wsConnected = false;
+      state.executionUncertain = true;
       state.backfillInFlight = false;
       state.textDirty = true;
       if (!state.shuttingDown) {
@@ -1888,7 +2165,7 @@
 
   let bus = null;
   try {
-    bus = new BroadcastChannel("comfy-logblaster-bus");
+    bus = new BroadcastChannel(`comfy-logblaster-bus:${serverBase}`);
     bus.addEventListener("message", (ev) => {
       if (state.shuttingDown) return;
       const m = ev.data;
@@ -1896,14 +2173,7 @@
       if (m.type === "ping") {
         try { bus.postMessage({ type: "pong", ts: Date.now() }); } catch (_) {}
       } else if (m.type === "node_map" && m.nodes && typeof m.nodes === "object") {
-        if (m.replace) state.nodeTitleMap.clear();
-        for (const [id, title] of Object.entries(m.nodes)) {
-          state.nodeTitleMap.set(String(id), String(title));
-        }
-        if (state.activeNodeId) {
-          state.activeNodeTitle = resolveNodeTitle(state.activeNodeId);
-          state.textDirty = true;
-        }
+        receiveNodeMap(m);
       } else if (m.type === "wake") {
         state.flashPulse = Math.max(state.flashPulse, 0.65);
         state.textDirty = true;
@@ -1916,25 +2186,57 @@
     }, 1500);
   } catch (_) {}
 
-  // Single-flight telemetry poller: queries NVML first, latches nvmlUnavailable once
-  // reported unavailable so Mac MPS / AMD ROCm / CPU hosts only query /system_stats.
+  function getTelemetryFreshness(nowMs = performance.now()) {
+    if (!Number.isFinite(state.lastTelemetryOkMs)) {
+      return { kind: "unavailable", ageSec: 0, label: "TELEMETRY UNAVAILABLE" };
+    }
+    const ageSec = Math.floor(Math.max(0, nowMs - state.lastTelemetryOkMs) / 1000);
+    if (ageSec >= 15) return { kind: "offline", ageSec, label: "TELEMETRY OFFLINE" };
+    if (ageSec >= 5) return { kind: "stale", ageSec, label: `STALE ${ageSec}s` };
+    return { kind: "fresh", ageSec, label: "" };
+  }
+
+  function getConnectionStatus(nowMs = performance.now()) {
+    const ageSec = state.wsConnected || !Number.isFinite(state.wsDisconnectedAtMs)
+      ? 0 : Math.floor(Math.max(0, nowMs - state.wsDisconnectedAtMs) / 1000);
+    const retrySec = Math.max(0, Math.ceil((state.wsReconnectAtMs - nowMs) / 1000));
+    const offline = !state.wsConnected && ageSec >= 10;
+    const elapsed = `${String(Math.floor(ageSec / 60)).padStart(2, "0")}:${String(ageSec % 60).padStart(2, "0")}`;
+    return {
+      offline, ageSec, retrySec, elapsed,
+      label: state.wsConnected ? state.runState : (offline ? "SERVER OFFLINE" : "RECONNECTING"),
+    };
+  }
+
+  function recordTelemetrySample(payload) {
+    if (state.shuttingDown) return;
+    state.gpuTelemetry = payload;
+    state.lastTelemetryOkMs = performance.now();
+    state.textDirty = true;
+  }
+
+  // Single-flight telemetry poller with a slow NVML recovery probe on fallback hosts.
   let telemetryInFlight = false;
+  let nextNvmlProbeMs = 0;
   async function pollTelemetry() {
     if (document.hidden || state.shuttingDown || telemetryInFlight) return;
     telemetryInFlight = true;
     try {
-      if (!state.nvmlUnavailable) {
+      if (!state.nvmlUnavailable || performance.now() >= nextNvmlProbeMs) {
         try {
-          const res = await fetchWithTimeout("/logblaster/telemetry", { cache: "no-store" }, 2500);
+          const res = await fetchWithTimeout(serverUrl("/logblaster/telemetry"), { cache: "no-store" }, 2500);
           if (res.ok) {
             const data = await res.json();
-            if (data && data.available) {
-              state.gpuTelemetry = { ...data, metrics_mode: data.metrics_mode || "nvml" };
-              state.textDirty = true;
+            if (state.shuttingDown) return;
+            if (data && data.available && Number.isFinite(data.vram_total_mib) && data.vram_total_mib > 0 &&
+                Number.isFinite(data.vram_used_mib) && data.vram_used_mib >= 0) {
+              state.nvmlUnavailable = false;
+              recordTelemetrySample({ ...data, metrics_mode: data.metrics_mode || "nvml" });
               return;
             }
             if (data && data.available === false) {
               state.nvmlUnavailable = true;
+              nextNvmlProbeMs = performance.now() + 30000;
             }
           }
         } catch (_) {}
@@ -1942,9 +2244,10 @@
 
       // Non-NVIDIA fallback: ComfyUI standard /system_stats
       try {
-        const sysRes = await fetchWithTimeout("/system_stats", { cache: "no-store" }, 2500);
+        const sysRes = await fetchWithTimeout(serverUrl("/system_stats"), { cache: "no-store" }, 2500);
         if (sysRes.ok) {
           const sysData = await sysRes.json();
+          if (state.shuttingDown) return;
           const devs = Array.isArray(sysData?.devices)
             ? sysData.devices
             : (Array.isArray(sysData?.system?.devices) ? sysData.system.devices : []);
@@ -1952,6 +2255,8 @@
           if (dev) {
             const rawTotal = Number(dev.vram_total);
             const rawFree = Number(dev.vram_free);
+            if (!Number.isFinite(rawTotal) || rawTotal <= 0 ||
+                !Number.isFinite(rawFree) || rawFree < 0 || rawFree > rawTotal) return;
             const totalMib = Number.isFinite(rawTotal) && rawTotal >= 0
               ? Math.round(rawTotal / (1024 * 1024))
               : 0;
@@ -1962,7 +2267,7 @@
               .replace(/^(?:cuda|mps|xpu|hip|cpu)(?::\d+)?\s+/i, "")
               .replace(/\s*:.*$/, "")
               .trim() || "Compute Device";
-            state.gpuTelemetry = {
+            recordTelemetrySample({
               ok: true,
               available: totalMib > 0,
               metrics_mode: "vram_only",
@@ -1972,13 +2277,13 @@
               vram_total_mib: totalMib,
               temp_c: 0,
               power_w: 0,
-            };
-            state.textDirty = true;
+            });
           }
         }
       } catch (_) {}
     } finally {
       telemetryInFlight = false;
+      state.textDirty = true;
     }
   }
   telemetryTimer = setInterval(pollTelemetry, 1200);
@@ -1998,8 +2303,14 @@
   // 7. SYNTHETIC "TEST BLAST" DEMO GENERATOR (HOTKEY: B)
   // =========================================================================
   function startTestBlast() {
-    demoTimers.forEach(clearTimeout);
-    demoTimers = [];
+    if (state.shuttingDown) return;
+    if (state.runState === "BLASTING" && !demoActive) {
+      showToast("Finish the current workflow before starting TEST BLAST");
+      return;
+    }
+    cancelTestBlast();
+    demoActive = true;
+    const myGeneration = demoGeneration;
 
     state.paused = false;
     state.scrollBackLines = 0;
@@ -2007,19 +2318,27 @@
 
     state.runState = "BLASTING";
     state.runStartMs = performance.now();
-    state.degaussWobble = 1.0;
+    state.activePromptId = null;
+    state.activeNodeId = null;
+    state.nodeTitleMap = new Map();
+    state.activeNodeTitle = "Demo Blast";
+    state.stepVal = 0;
+    state.stepMax = 0;
+    state.lastStepMs = 0;
+    state.stepRateSmooth = 0;
+    state.degaussWobble = state.reducedMotion ? 0 : 1.0;
     state.flashPulse = 0.9;
     triggerShockwave(0.5, 0.35);
 
     const script = [
       [0,    "[LogBlaster:SHOCKWAVE] >>> SYNTHETIC GPU SHADER TEST BLAST INITIATED <<<\n"],
-      [90,   "[launch] production seeds: fresh OS entropy per episode | CUDA_MALLOC=async\n"],
-      [180,  "[ComfyUI] Requested to load FluxClipModel_ & LTXVTransformer3D (11.42 GiB VRAM)\n"],
-      [310,  "[OldTimeRadio] Stage 1/4: LedgerScriptWriter -> casting 4 voices, 14 beats @ 48000 Hz\n"],
-      [450,  "  Beat 01 [NARRATOR]  \"Static hums across the Ionian relay at 0300 UTC...\" (42.8 tok/s)\n"],
-      [570,  "  Beat 02 [CDR. VANCE] \"Hold the carrier wave! Something is modulating the telemetry!\" (46.1 tok/s)\n"],
-      [690,  "  Beat 03 [DR. CHEN]   \"Look at the spectral flatness: 0.156 -- that's structured signal!\" (47.4 tok/s)\n"],
-      [840,  "[KokoroTTS] Synthesizing 14 dialogue stems (fp16) -> 48kHz broadcast master\n"],
+      [90,   "[LogBlaster] Demo output only: no workflow is queued and no files are created\n"],
+      [180,  "[ComfyUI] Loading diffusion model and text encoder (sample telemetry: 6.2 GiB VRAM)\n"],
+      [310,  "[ComfyUI] Stage 1/4: Encode prompt -> neon observatory beneath a star-filled sky\n"],
+      [450,  "[CLIPTextEncode] Positive conditioning ready: vivid colors, crisp detail\n"],
+      [570,  "[CLIPTextEncode] Negative conditioning ready\n"],
+      [690,  "[EmptyLatentImage] Prepared 1024 x 1024 latent, batch size 1\n"],
+      [840,  "[KSampler] Stage 2/4: Sampling preview, seed 2070\n"],
     ];
 
     for (let s = 1; s <= 14; s++) {
@@ -2028,12 +2347,12 @@
       const bar = "█".repeat(filled) + "░".repeat(22 - filled);
       script.push([
         860 + s * 65,
-        `\rTTS Synth: ${String(pct).padStart(3, " ")}%|${bar}| ${s}/14 [00:0${Math.floor(s / 3)}<00:01, 15.4stems/s]`,
-        { step: s, max: 14, node: "KokoroTTS_Batch (#18)" },
+        `\rPreview: ${String(pct).padStart(3, " ")}%|${bar}| ${s}/14 [00:0${Math.floor(s / 3)}<00:01, 15.4it/s]`,
+        { step: s, max: 14, node: "KSampler (#7)" },
       ]);
     }
-    script.push([1820, "\n[OldTimeRadio] Audio LUFS check: -16.1 LUFS, true-peak -1.2 dBTP [PASS]\n"]);
-    script.push([1960, "[LTX-Video] Stage 3/4: Two-stage IA2V latent diffusion (768x512 -> 1536x1024, 121 frames)\n", { shock: true, node: "OTR_VideoRenderBatch (#74)" }]);
+    script.push([1820, "\n[ComfyUI] Preview complete; preparing final sampling pass\n"]);
+    script.push([1960, "[KSampler] Stage 3/4: Final diffusion pass (1024 x 1024, 24 steps)\n", { shock: true, node: "KSampler (#12)" }]);
 
     for (let s = 1; s <= 24; s++) {
       const pct = Math.round((s / 24) * 100);
@@ -2043,16 +2362,17 @@
       script.push([
         2000 + s * 85,
         `\rDiffusion: ${String(pct).padStart(3, " ")}%|${bar}| ${s}/24 [00:${String(s).padStart(2, "0")}<00:${String(24 - s).padStart(2, "0")}, ${rate}it/s, vram=14120MiB]`,
-        { step: s, max: 24, node: "OTR_VideoRenderBatch (#74)" },
+        { step: s, max: 24, node: "KSampler (#12)" },
       ]);
     }
-    script.push([4120, "\n[WARNING] Transient high-frequency peak clamped at frame 97 (+0.3 dB headroom guard)\n"]);
-    script.push([4280, "[VideoHelperSuite] Muxing H.264 High@L4.2 + 48kHz PCM -> otr/obs/episode_final.mp4\n", { shock: true, node: "OTR_ObsPublish (#92)" }]);
-    script.push([4520, "[OldTimeRadio] obs_publish OK -> verified deliverable on disk (121 frames, 0 dropped)\n"]);
+    script.push([4120, "\n[WARNING] Demo memory threshold reached; switching to tiled decode\n"]);
+    script.push([4280, "[VAEDecodeTiled] Stage 4/4: Decode latent -> 1024 x 1024 RGB image\n", { shock: true, node: "VAEDecodeTiled (#15)" }]);
+    script.push([4520, "[SaveImage] Demo preview ready: logblaster_demo_00001.png (simulated output)\n"]);
     script.push([4680, "Prompt executed in 00:04.68 === COMPLETE ===\n", { complete: true }]);
 
     for (const [delay, text, meta] of script) {
       const t = setTimeout(() => {
+        if (!demoActive || myGeneration !== demoGeneration || state.shuttingDown) return;
         if (meta?.node) {
           if (state.activeNodeTitle !== meta.node) state.nodePulse = 1.0;
           state.activeNodeTitle = meta.node;
@@ -2070,6 +2390,7 @@
           state.activeNodeTitle = "Demo Blast Complete";
         }
         ingestLogChunk(text);
+        if (meta?.complete) cancelTestBlast();
       }, delay);
       demoTimers.push(t);
     }
@@ -2227,6 +2548,24 @@
     return curX;
   }
 
+  function fitCanvasText(text, maxWidth) {
+    const value = String(text).slice(0, 256);
+    if (ctx.measureText(value).width <= maxWidth) return value;
+    let end = value.length;
+    while (end > 0 && ctx.measureText(value.slice(0, end) + "…").width > maxWidth) end--;
+    return end ? value.slice(0, end) + "…" : "";
+  }
+
+  function getLogBottom(vh, logTop) {
+    const dockTop = controlDock.getBoundingClientRect?.().top;
+    let controlsTop = Number.isFinite(dockTop) && dockTop > 0 ? dockTop : vh - 48;
+    const moreRect = dockMore.open ? dockMoreTools.getBoundingClientRect?.() : null;
+    if (Number.isFinite(moreRect?.top) && moreRect.height > 0 && moreRect.width > 0) {
+      controlsTop = Math.min(controlsTop, moreRect.top);
+    }
+    return Math.max(logTop, Math.min(vh - 16, controlsTop - 10));
+  }
+
   function renderTextTexture(nowMs, dtSec) {
     const w = textCanvas.width;
     const h = textCanvas.height;
@@ -2262,7 +2601,8 @@
       ERROR: "#ff3e6c",
     };
     const badgeColor = pal.primary || statusColors[state.runState] || "#4df3ff";
-    const wsTag = state.wsConnected ? state.runState : "RECONNECTING";
+    const connection = getConnectionStatus(nowMs);
+    const wsTag = connection.label;
     ctx.fillStyle = badgeColor;
     ctx.fillText(`[${wsTag}]`, padX + 196, 22);
 
@@ -2273,24 +2613,32 @@
     ctx.fillStyle = pal.primary || "#bfe8ff";
     const activeList = getFilteredLines();
     const filterBadge = state.filterQuery.trim()
-      ? ` [FILTER "${state.filterQuery.trim()}" ${activeList.length}/${state.lines.length}]`
+      ? `[FILTER ${activeList.length}/${state.lines.length}]`
       : "";
-    const nodeText = (`NODE: ${state.activeNodeTitle}` + filterBadge).slice(0, 48);
+    const nodeHeaderWidth = Math.min(vw - padX * 2, Math.max(280, vw * 0.34) - padX - 12);
+    const filterWidth = filterBadge ? ctx.measureText(filterBadge).width + 8 : 0;
+    const nodeText = fitCanvasText(`NODE: ${state.activeNodeTitle}`, nodeHeaderWidth - filterWidth);
     ctx.fillText(nodeText, padX, 44);
+    if (filterBadge) {
+      ctx.fillStyle = pal.primary || "#4df3ff";
+      ctx.fillText(filterBadge, padX + nodeHeaderWidth - filterWidth + 8, 44);
+    }
 
     const barW = Math.min(300, vw * 0.26);
     const barY = 56;
     const barH = 11;
     ctx.strokeStyle = pal.dim;
     ctx.strokeRect(padX, barY, barW, barH);
-    const pct = state.stepMax > 0 ? Math.min(1, state.stepVal / state.stepMax) : (state.runState === "BLASTING" ? 0.15 + 0.1 * Math.sin(nowMs * 0.008) : 0);
+    const pct = state.stepMax > 0 ? Math.min(1, state.stepVal / state.stepMax) : (state.runState === "BLASTING" ? (state.reducedMotion ? 0.15 : 0.15 + 0.1 * Math.sin(nowMs * 0.008)) : 0);
     if (pct > 0) {
       ctx.fillStyle = pal.primary || "#4dffcb";
       ctx.fillRect(padX + 2, barY + 2, Math.max(2, (barW - 4) * pct), barH - 4);
     }
     ctx.font = "11px 'Cascadia Mono', 'Consolas', monospace";
     ctx.fillStyle = pal.dim;
-    const stepStr = state.stepMax > 0
+    const stepStr = connection.offline
+      ? `SERVER OFFLINE ${connection.elapsed} | ${connection.retrySec > 0 ? `RETRY IN ${connection.retrySec}s` : "CONNECTING"}`
+      : state.stepMax > 0
       ? `${state.stepVal}/${state.stepMax} (${Math.round(pct * 100)}%)  ${state.stepRateSmooth > 0 ? state.stepRateSmooth.toFixed(1) + " it/s" : ""}  T+${elapsed}`
       : `T+${elapsed}  |  ${state.lpsDisplay} lines/s  ${state.cpsDisplay} chars/s`;
     ctx.fillText(stepStr, padX, 82);
@@ -2358,6 +2706,9 @@
     // Right block: Live Hardware Telemetry (NVML or /system_stats universal fallback)
     const rightX = vw - padX - 258;
     if (rightX > 360) {
+      ctx.save();
+      const freshness = getTelemetryFreshness(nowMs);
+      if (freshness.kind === "stale" || freshness.kind === "offline") ctx.globalAlpha = 0.5;
       const gt = state.gpuTelemetry;
       const shortGpu = (gt.gpu_name || "GPU")
         .replace("NVIDIA GeForce ", "")
@@ -2368,7 +2719,8 @@
       ctx.fillStyle = accent;
       ctx.fillText(`COMPUTE: ${shortGpu}`, rightX, 20);
 
-      if (gt.available && gt.vram_total_mib > 0) {
+      if (gt.available && gt.vram_total_mib > 0 &&
+          (freshness.kind === "fresh" || freshness.kind === "stale")) {
         const vramPct = Math.min(1, gt.vram_used_mib / gt.vram_total_mib);
         const vramGib = (gt.vram_used_mib / 1024).toFixed(1);
         const totGib = (gt.vram_total_mib / 1024).toFixed(1);
@@ -2389,12 +2741,17 @@
         ctx.fillRect(rightX, 60, gw, 5);
         ctx.fillStyle = pal.primary || (vramPct > 0.9 ? "#ff4d6d" : "#4df3ff");
         ctx.fillRect(rightX, 60, gw * vramPct, 5);
+        if (freshness.kind === "stale") {
+          ctx.font = "9px 'Cascadia Mono', 'Consolas', monospace";
+          ctx.fillText(freshness.label, rightX, 73);
+        }
       } else {
         ctx.font = "11px 'Cascadia Mono', 'Consolas', monospace";
         ctx.fillStyle = pal.dim;
-        ctx.fillText("TELEMETRY STANDBY", rightX, 40);
+        ctx.fillText(freshness.label || "TELEMETRY UNAVAILABLE", rightX, 40);
       }
 
+      ctx.restore();
       ctx.font = "10px 'Cascadia Mono', 'Consolas', monospace";
       ctx.fillStyle = pal.dim;
       const fxGpuShort = state.shaderRendererName.slice(0, 22);
@@ -2404,13 +2761,13 @@
     // --- MAIN BLASTING LOG TEXT VIEWPORT (CASCADE | DUAL | DRUM | FLAT) ---
     state.headerSplitUv = 1.0 - Math.min(0.32, Math.max(0.08, (headerH + 4) / Math.max(200, vh)));
     const logTop = headerH + 8;
-    const logBottom = vh - 58; // Keeps foreground Hero text cleanly above #controlDock
-    const availH = Math.max(90, logBottom - logTop);
+    const logBottom = getLogBottom(vh, logTop);
+    const availH = Math.max(0, logBottom - logTop);
     const fs = state.fontSize;
     const monoFamily = "'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace";
 
     state.smoothScrollPx *= Math.pow(0.0005, dtSec);
-    if (state.smoothScrollPx < 0.35 || state.paused) state.smoothScrollPx = 0;
+    if (state.reducedMotion || state.smoothScrollPx < 0.35 || state.paused) state.smoothScrollPx = 0;
 
     ctx.beginPath();
     ctx.rect(0, logTop, vw, availH + 10);
@@ -2418,8 +2775,7 @@
     ctx.textBaseline = "alphabetic";
 
     const total = activeList.length;
-    const clampedScrollBack = Math.min(state.scrollBackLines, Math.max(0, total - 1));
-    const endIdx = Math.max(0, total - clampedScrollBack);
+    const endIdx = getViewEndIndex(activeList);
 
     if (state.viewMode === "CASCADE" || state.viewMode === "DRUM") {
       // Giant Foreground Live Stream -> Progressively Shrinking Perspective Trail
@@ -2490,7 +2846,7 @@
         const subLineH = Math.round(lineFs * 1.22);
         const blockGap = Math.max(3, Math.round(lineFs * 0.24));
         const targetBlockH = wrappedRows.length * subLineH + blockGap;
-        const blockH = line._smoothH > 0
+        const blockH = !state.reducedMotion && line._smoothH > 0
           ? line._smoothH + (targetBlockH - line._smoothH) * Math.min(1, dtSec * 22)
           : targetBlockH;
         line._smoothH = blockH;
@@ -2498,7 +2854,7 @@
         const blockTopY = cursorBottomY - blockH;
         if (cursorBottomY >= logTop - subLineH && blockTopY <= logBottom + subLineH * 2) {
           const ageMs = Math.max(0, nowMs - line.ts);
-          const birthFlash = ageMs < 320 ? Math.pow(1.0 - ageMs / 320, 1.65) : 0.0;
+          const birthFlash = !state.reducedMotion && ageMs < 320 ? Math.pow(1.0 - ageMs / 320, 1.65) : 0.0;
           const depthAlpha = isHeroRow
             ? 1.0
             : Math.max(0.28, 1.0 - Math.pow(distNorm, 1.25) * 0.66);
@@ -2545,7 +2901,7 @@
             );
           }
 
-          if (isHeroRow && !state.paused && Math.sin(nowMs * 0.012) > -0.25) {
+          if (isHeroRow && !state.paused && (state.reducedMotion || Math.sin(nowMs * 0.012) > -0.25)) {
             ctx.fillStyle = pal.bright;
             ctx.fillRect(
               Math.min(rowRight - lineFs * 0.5, lastRowEndX + 6),
@@ -2577,7 +2933,7 @@
         if (y < logTop - lineH || y > logBottom + lineH) continue;
 
         const ageMs = Math.max(0, nowMs - line.ts);
-        const birthFlash = ageMs < 280 ? Math.pow(1.0 - ageMs / 280, 1.7) : 0.0;
+        const birthFlash = !state.reducedMotion && ageMs < 280 ? Math.pow(1.0 - ageMs / 280, 1.7) : 0.0;
 
         if (line.kind !== "normal" || birthFlash > 0.25) {
           ctx.fillStyle = birthFlash > 0.45 ? "#ffffff" : resolveGutterColor(line.kind, pal);
@@ -2596,7 +2952,7 @@
       }
       ctx.globalAlpha = 1.0;
 
-      if (state.viewMode === "FLAT" && !state.paused && Math.sin(nowMs * 0.011) > -0.2) {
+      if (state.viewMode === "FLAT" && !state.paused && (state.reducedMotion || Math.sin(nowMs * 0.011) > -0.2)) {
         ctx.fillStyle = pal.bright;
         ctx.fillRect(padX + 8, logBottom - 2, bgFs * 0.65, 3);
       }
@@ -2681,7 +3037,7 @@
           );
         }
 
-        if (!state.paused && Math.sin(nowMs * 0.012) > -0.25) {
+        if (!state.paused && (state.reducedMotion || Math.sin(nowMs * 0.012) > -0.25)) {
           ctx.fillStyle = pal.bright;
           ctx.fillRect(
             Math.min(vw - padX - colossalFs * 0.6, endHeroX + 8),
@@ -2830,6 +3186,7 @@ uniform float u_time;
 uniform int u_preset;
 uniform int u_tintMode;
 uniform int u_viewMode;
+uniform bool u_reducedMotion;
 uniform float u_headerSplit;
 uniform float u_fx;
 uniform float u_blastRate;
@@ -2888,7 +3245,7 @@ void main() {
   vec2 px = 1.0 / max(u_res, vec2(1.0));
   vec2 uv = v_uv;
 
-  if (u_audioBass > 0.05) {
+  if (!u_reducedMotion && u_audioBass > 0.05) {
     float bassZoom = 1.0 - (u_audioBass * 0.0085 * min(fx, 1.3));
     uv = vec2(0.5) + (uv - vec2(0.5)) * bassZoom;
   }
@@ -2897,8 +3254,9 @@ void main() {
   if (u_preset == 0) warpStrength = 0.056 * min(fx, 1.25);
   else if (u_preset == 2) warpStrength = 0.038 * min(fx, 1.2);
   else if (u_preset == 3) warpStrength = 0.048 * min(fx, 1.2);
+  if (u_reducedMotion) warpStrength = 0.0;
 
-  if (u_degauss > 0.01) {
+  if (!u_reducedMotion && u_degauss > 0.01) {
     float wob = sin(u_time * 42.0 + uv.y * 12.0) * 0.014 * u_degauss * fx;
     uv.x += wob;
     uv.y += cos(u_time * 35.0) * 0.006 * u_degauss * fx;
@@ -2939,7 +3297,7 @@ void main() {
 
   float shockAge = u_time - u_shockTime;
   float shockRing = 0.0;
-  if (shockAge >= 0.0 && shockAge < 1.35) {
+  if (!u_reducedMotion && shockAge >= 0.0 && shockAge < 1.35) {
     vec2 aspect = vec2(u_res.x / max(u_res.y, 1.0), 1.0);
     vec2 delta = (uv - u_shockCenter) * aspect;
     float dist = length(delta);
@@ -2956,7 +3314,7 @@ void main() {
   float fftAtX  = texture(u_audioTex, vec2(uv.x * 0.72, 0.75)).r;
 
   float sliceGlitch = 0.0;
-  if (u_preset == 1) {
+  if (!u_reducedMotion && u_preset == 1) {
     float activity = clamp(u_blastRate * 0.45 + u_nodePulse * 0.9 + u_glitchBurst * 1.4 + u_audioHigh * 0.75, 0.0, 1.9);
     float bandY = floor(uv.y * 34.0 + floor(u_time * 18.0));
     float rnd = hash12(vec2(bandY, floor(u_time * 22.0)));
@@ -2965,12 +3323,12 @@ void main() {
       sliceGlitch = (hash12(vec2(bandY * 1.7, u_time)) - 0.5) * 0.055 * fx * (0.4 + activity);
       uv.x = clamp(uv.x + sliceGlitch, 0.001, 0.999);
     }
-  } else if (u_preset == 2) {
+  } else if (!u_reducedMotion && u_preset == 2) {
     float carrier = sin(uv.y * 55.0 - u_time * 7.5) * cos(uv.y * 19.0 + u_time * 4.2);
     float energy = (0.0006 + 0.0022 * clamp(u_blastRate, 0.0, 1.2) + 0.0024 * u_stepPulse) * fx;
     float audioDeflect = waveAtY * (0.0045 * clamp(u_audioMid + u_audioBass * 0.6, 0.0, 1.5)) * fx;
     uv.x = clamp(uv.x + carrier * energy + audioDeflect, 0.001, 0.999);
-  } else if (u_glitchBurst > 0.05) {
+  } else if (!u_reducedMotion && u_glitchBurst > 0.05) {
     float bandY = floor(uv.y * 28.0);
     float rnd = hash12(vec2(bandY, floor(u_time * 30.0)));
     if (rnd > 0.82) {
@@ -3059,7 +3417,7 @@ void main() {
       float xProj = (uv.x - 0.5) * z * 2.4;
       float gx = 1.0 - smoothstep(0.0, 0.06, abs(fract(xProj) - 0.5));
       float gz = 1.0 - smoothstep(0.0, 0.07, abs(fract(z - u_time * (0.8 + u_blastRate + u_audioBass)) - 0.5));
-      float fade = smoothstep(horizonY, 0.02, uv.y);
+      float fade = 1.0 - smoothstep(0.02, horizonY, uv.y);
       vec3 gridCol = (u_tintMode == 1)
         ? vec3(0.78 + u_audioBass * 0.30, 0.62, 0.02)
         : vec3(0.48 + u_audioBass * 0.35, 0.06, 0.42);
@@ -3201,7 +3559,7 @@ void main() {
     if (compositeProg) {
       for (const u of [
         "u_textTex", "u_feedbackTex", "u_audioTex", "u_res", "u_time", "u_preset",
-        "u_tintMode", "u_viewMode", "u_headerSplit", "u_fx",
+        "u_tintMode", "u_viewMode", "u_reducedMotion", "u_headerSplit", "u_fx",
         "u_blastRate", "u_stepPulse", "u_nodePulse", "u_glitchBurst",
         "u_flashPulse", "u_degauss", "u_shockTime", "u_shockCenter",
         "u_audioBass", "u_audioMid", "u_audioHigh",
@@ -3316,6 +3674,7 @@ void main() {
   }
 
   document.addEventListener("visibilitychange", () => {
+    syncSynthVisibility();
     if (document.hidden) {
       if (rafId) {
         cancelAnimationFrame(rafId);
@@ -3374,9 +3733,9 @@ void main() {
     state.blastRate = Math.max(0.0, state.blastRate - dtSec * 0.72);
     state.stepPulse = Math.max(0.0, state.stepPulse - dtSec * 2.6);
     state.nodePulse = Math.max(0.0, state.nodePulse - dtSec * 1.9);
-    state.glitchBurst = Math.max(0.0, state.glitchBurst - dtSec * 1.65);
+    state.glitchBurst = state.reducedMotion ? 0 : Math.max(0.0, state.glitchBurst - dtSec * 1.65);
     state.flashPulse = Math.max(0.0, state.flashPulse - dtSec * 1.8);
-    state.degaussWobble = Math.max(0.0, state.degaussWobble - dtSec * 1.4);
+    state.degaussWobble = state.reducedMotion ? 0 : Math.max(0.0, state.degaussWobble - dtSec * 1.4);
 
     updateAudioAnalysis(nowMs, dtSec);
 
@@ -3414,7 +3773,7 @@ void main() {
 
     let writeTex = textTex;
     // Fast-path: skip Pass 1 feedback FBO completely when FX == 0% or FBO incomplete
-    if (state.fxIntensity >= 0.02 && state.fboReady && feedbackProg) {
+    if (!state.reducedMotion && state.fxIntensity >= 0.02 && state.fboReady && feedbackProg) {
       const readTex = pingPong ? texA : texB;
       const writeFbo = pingPong ? fboB : fboA;
       writeTex = pingPong ? texB : texA;
@@ -3461,29 +3820,31 @@ void main() {
     gl.uniform1i(compUniforms.u_audioTex, 2);
 
     gl.uniform2f(compUniforms.u_res, w, h);
-    gl.uniform1f(compUniforms.u_time, tSec);
+    gl.uniform1f(compUniforms.u_time, state.reducedMotion ? 0 : tSec);
     gl.uniform1i(compUniforms.u_preset, state.preset);
     gl.uniform1i(compUniforms.u_tintMode, state.tintMode);
     gl.uniform1i(compUniforms.u_viewMode, Math.max(0, VIEW_MODES.indexOf(state.viewMode)));
+    gl.uniform1i(compUniforms.u_reducedMotion, state.reducedMotion ? 1 : 0);
     gl.uniform1f(compUniforms.u_headerSplit, state.headerSplitUv || 0.88);
     gl.uniform1f(compUniforms.u_fx, state.fxIntensity);
-    gl.uniform1f(compUniforms.u_blastRate, state.blastRate);
-    gl.uniform1f(compUniforms.u_stepPulse, state.stepPulse);
-    gl.uniform1f(compUniforms.u_nodePulse, state.nodePulse);
+    gl.uniform1f(compUniforms.u_blastRate, state.reducedMotion ? 0 : state.blastRate);
+    gl.uniform1f(compUniforms.u_stepPulse, state.reducedMotion ? 0 : state.stepPulse);
+    gl.uniform1f(compUniforms.u_nodePulse, state.reducedMotion ? 0 : state.nodePulse);
     gl.uniform1f(compUniforms.u_glitchBurst, state.glitchBurst);
-    gl.uniform1f(compUniforms.u_flashPulse, state.flashPulse);
+    gl.uniform1f(compUniforms.u_flashPulse, state.reducedMotion ? 0 : state.flashPulse);
     gl.uniform1f(compUniforms.u_degauss, state.degaussWobble);
     gl.uniform1f(compUniforms.u_shockTime, state.shockwaveTime);
     gl.uniform2f(compUniforms.u_shockCenter, state.shockwaveCenter[0], state.shockwaveCenter[1]);
-    gl.uniform1f(compUniforms.u_audioBass, state.audioBass);
-    gl.uniform1f(compUniforms.u_audioMid, state.audioMid);
-    gl.uniform1f(compUniforms.u_audioHigh, state.audioHigh);
+    gl.uniform1f(compUniforms.u_audioBass, state.reducedMotion ? 0 : state.audioBass);
+    gl.uniform1f(compUniforms.u_audioMid, state.reducedMotion ? 0 : state.audioMid);
+    gl.uniform1f(compUniforms.u_audioHigh, state.reducedMotion ? 0 : state.audioHigh);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   injectLocalLine("[LogBlaster] Audio-Reactive WebGL2 GPU Log Visualizer ready (1-4 Shaders | V View | Y Comfy B&Y | T Tint | / Filter | E Errors | M Synth | A Audio | B Blast)");
   injectLocalLine(`[LogBlaster] View: ${state.viewMode} | Palette: ${TINT_NAMES[state.tintMode]} | WebGL2: ${state.shaderRendererName} | FPS: ${state.fpsMode} | Redaction: ${state.redactEnabled ? "ON" : "OFF"}`);
+  if (storageGet("logblaster.helpSeen", "0") !== "1") setHelpOpen(true);
   connectComfySocket();
   scheduleNextFrame();
 })();

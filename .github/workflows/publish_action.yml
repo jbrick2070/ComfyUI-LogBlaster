@@ -1,25 +1,88 @@
-name: Publish to Comfy registry
+name: Regression tests and Comfy registry release
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
-    paths:
-      - "pyproject.toml"
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   publish-node:
-    name: Publish custom node to the Comfy registry
+    name: Test plugin and publish intentional releases
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'jbrick2070' }}
+    env:
+      PYTHONUTF8: "1"
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install test dependencies
+        run: python -m pip install pytest aiohttp
+      - name: Run plugin regression suite
+        run: |
+          node --version
+          python -m pytest -q -p no:cacheprovider tests/test_logblaster.py
+      - name: Check release intent
+        id: release
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tomllib
+
+          current = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          if not isinstance(current, str) or not current.strip():
+              raise ValueError("project.version must be a nonempty string")
+
+          publish = os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+          if os.environ["GITHUB_EVENT_NAME"] == "push":
+              event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+              before = event.get("before", "")
+              # Initial pushes and unavailable history require an explicit manual release.
+              if isinstance(before, str) and re.fullmatch(r"[0-9a-fA-F]{40,64}", before) and set(before) != {"0"}:
+                  previous = subprocess.run(
+                      ["git", "show", f"{before}:pyproject.toml"],
+                      capture_output=True,
+                      check=False,
+                  )
+                  if previous.returncode == 0:
+                      try:
+                          old = tomllib.loads(previous.stdout.decode("utf-8"))["project"]["version"]
+                      except (KeyError, TypeError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+                          old = None
+                      if isinstance(old, str) and old.strip():
+                          publish = current != old
+                      else:
+                          print("::notice::Previous version is invalid or missing; use workflow_dispatch for an intentional release.")
+                  else:
+                      print("::notice::Previous version is unavailable; use workflow_dispatch for an intentional release.")
+              else:
+                  print("::notice::No previous commit to compare; use workflow_dispatch for an intentional release.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"publish={str(publish).lower()}\n")
+          print("Release requested." if publish else "Version unchanged or unavailable; publishing skipped.")
+          PY
       - name: Publish custom node
-        uses: Comfy-Org/publish-node-action@main
+        if: github.repository_owner == 'jbrick2070' && steps.release.outputs.publish == 'true'
+        uses: Comfy-Org/publish-node-action@d2366e7abb6ab16f3bb03e3520ae25c8cf749bc9
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}

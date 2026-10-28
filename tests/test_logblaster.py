@@ -16,6 +16,13 @@ from typing import Any, Callable, Dict, List, Tuple
 
 import pytest
 from aiohttp import web
+# Collected by the required single-file command via pytest's default prepend mode;
+# keep tests/ unpackaged, or replace this sibling import if changing import mode.
+from telemetry_failure_cases import (
+    test_nvml_metric_failure_and_recovery,
+    test_nvml_transient_init_failure_retries,
+    test_nvml_explicit_target_never_falls_back,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,7 +37,7 @@ def _load_pkg_module(name: str, rel_path: str):
 
 
 def test_no_utf8_bom_or_zero_byte_files() -> None:
-    exts = {".py", ".js", ".html", ".toml", ".md", ".bat", ".ps1"}
+    exts = {".py", ".js", ".cjs", ".html", ".toml", ".md", ".bat", ".ps1", ".yml"}
     checked = 0
     for path in REPO_ROOT.rglob("*"):
         if (
@@ -520,3 +527,19 @@ console.log("JS_UNIT_OK");
     )
     assert proc_unit.returncode == 0, proc_unit.stderr
     assert "JS_UNIT_OK" in proc_unit.stdout
+
+
+@pytest.mark.parametrize("harness, sentinel", [
+    ("extension_harness.cjs", "EXTENSION_UNIT_OK"),
+    ("hud_harness.cjs", "HUD_INTEGRATION_OK"),
+])
+def test_browser_script_integration(harness: str, sentinel: str) -> None:
+    node_bin = shutil.which("node")
+    if not node_bin:
+        pytest.skip("node binary required for browser script integration tests")
+    result = subprocess.run(
+        [node_bin, str(REPO_ROOT / "tests" / harness)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert sentinel in result.stdout, f"Harness did not finish: {result.stdout}"
