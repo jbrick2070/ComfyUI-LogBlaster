@@ -8,12 +8,19 @@ Real-time **Audio-Reactive WebGL2 GPU Shader Log-Text Visualizer** for ComfyUI �
 
 Instead of a flat wall of uniform tiny HTML text, `ComfyUI-LogBlaster` renders ComfyUI's live blasting `stdout`/`stderr` stream (`/internal/logs/subscribe` + `/ws`) onto an offscreen transparent-alpha glyph canvas and processes **the log characters themselves** through a 2-pass WebGL2 ping-pong fragment shader pipeline.
 
-## Installation (30 Seconds — Zero `pip` Dependencies)
+## Installation (Zero `pip` Dependencies)
 
-```bash
-cd ComfyUI/custom_nodes
-git clone https://github.com/jbrick2070/ComfyUI-LogBlaster.git
-```
+- **Option 1 — ComfyUI-Manager / Comfy Registry (`@fluxus`):**
+  Search **`LogBlaster`** (`comfyui-logblaster`) in **ComfyUI-Manager** and click **Install**, or view on the official Comfy Registry: https://registry.comfy.org/nodes/comfyui-logblaster
+- **Option 2 — Comfy CLI:**
+  ```bash
+  comfy node install comfyui-logblaster
+  ```
+- **Option 3 — Manual `git clone`:**
+  ```bash
+  cd ComfyUI/custom_nodes
+  git clone https://github.com/jbrick2070/ComfyUI-LogBlaster.git
+  ```
 
 Restart ComfyUI — no Python packages to install and **0 MB extra PyTorch VRAM** (`ctypes` NVML). LogBlaster automatically registers `GET /logblaster`, mounts **`LOG BLASTER | AUTO: ON`** in ComfyUI's top bar, and pops open on workflow runs.
 
