@@ -1,9 +1,11 @@
 @echo off
 REM Opens ComfyUI-LogBlaster in a sleek borderless native app window (Edge/Chrome).
-REM Pass a custom port as %1 if ComfyUI is not on 8000 (default: 8000).
+REM Pass optional port as %1 (default: 8000) and host as %2 (default: 127.0.0.1).
 set PORT=%1
 if "%PORT%"=="" set PORT=8000
-set URL=http://127.0.0.1:%PORT%/logblaster
+set HOSTNAME=%2
+if "%HOSTNAME%"=="" set HOSTNAME=127.0.0.1
+set URL=http://%HOSTNAME%:%PORT%/logblaster
 
 where msedge >nul 2>nul
 if %ERRORLEVEL%==0 (

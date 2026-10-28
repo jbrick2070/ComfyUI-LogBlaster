@@ -48,8 +48,10 @@ _SAFE_HEADERS = {
 
 
 def register_routes(prompt_server: Any) -> bool:
-    """Attach read-only GET /logblaster and GET /logblaster/telemetry routes."""
+    """Attach read-only GET /logblaster and GET /logblaster/telemetry routes idempotently."""
     if prompt_server is None or getattr(prompt_server, "routes", None) is None:
+        return False
+    if getattr(prompt_server, "_logblaster_routes_registered", False):
         return False
 
     from aiohttp import web  # type: ignore
@@ -80,6 +82,7 @@ def register_routes(prompt_server: Any) -> bool:
         payload = get_gpu_telemetry()
         return web.json_response(payload, headers=_SAFE_HEADERS)
 
+    setattr(prompt_server, "_logblaster_routes_registered", True)
     return True
 
 

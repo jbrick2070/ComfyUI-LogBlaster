@@ -7,12 +7,12 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2306101a'/%3E%3Cpath d='M6 18h5l3-9 4 14 3-7h5' stroke='%234df3ff' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
 <style>
   :root {
-    --hud-bg: rgba(8, 12, 18, 0.84);
+    --hud-bg: rgba(8, 12, 18, 0.86);
     --hud-border: rgba(92, 225, 230, 0.34);
     --hud-accent: #4df3ff;
     --hud-hot: #ff3e7f;
     --hud-ok: #38ffb3;
-    --hud-audio: #ffc845;
+    --hud-err: #ff4769;
     --hud-text: #d9f4ff;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -34,26 +34,29 @@
   }
   #controlDock {
     position: fixed;
-    bottom: 14px;
-    right: 16px;
+    bottom: 12px;
+    right: 14px;
+    left: 14px;
+    max-width: fit-content;
+    margin-left: auto;
     z-index: 20;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding: 7px 11px;
+    padding: 6px 10px;
     border-radius: 10px;
     background: var(--hud-bg);
     border: 1px solid var(--hud-border);
     backdrop-filter: blur(8px);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.68);
     opacity: 0.44;
     transition: opacity 0.2s ease, border-color 0.2s ease;
     font-size: 11px;
   }
   #controlDock:hover, #controlDock:focus-within {
     opacity: 0.98;
-    border-color: rgba(92, 225, 230, 0.72);
+    border-color: rgba(92, 225, 230, 0.74);
   }
   .dock-group {
     display: flex;
@@ -71,11 +74,11 @@
     color: #cbe8f6;
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 6px;
-    padding: 4px 8px;
+    padding: 4px 7px;
     font-family: inherit;
     font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.3px;
+    letter-spacing: 0.25px;
     cursor: pointer;
     transition: all 0.14s ease;
   }
@@ -88,13 +91,19 @@
     background: rgba(77, 243, 255, 0.26);
     border-color: var(--hud-accent);
     color: #ffffff;
-    box-shadow: 0 0 10px rgba(77, 243, 255, 0.38);
+    box-shadow: 0 0 10px rgba(77, 243, 255, 0.36);
   }
   button.hud-btn.audio-active {
     background: rgba(56, 255, 179, 0.22);
     border-color: var(--hud-ok);
     color: #e6fff5;
-    box-shadow: 0 0 10px rgba(56, 255, 179, 0.38);
+    box-shadow: 0 0 10px rgba(56, 255, 179, 0.36);
+  }
+  button.hud-btn.err-active {
+    background: rgba(255, 71, 105, 0.25);
+    border-color: var(--hud-err);
+    color: #ffe0e7;
+    box-shadow: 0 0 10px rgba(255, 71, 105, 0.42);
   }
   button.hud-btn.blast-btn {
     background: rgba(255, 62, 127, 0.2);
@@ -107,6 +116,22 @@
     color: #ffffff;
     box-shadow: 0 0 12px rgba(255, 62, 127, 0.5);
   }
+  input.hud-filter {
+    width: 96px;
+    background: rgba(0, 0, 0, 0.45);
+    color: #e8fbff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    padding: 3px 7px;
+    font-family: inherit;
+    font-size: 11px;
+    outline: none;
+  }
+  input.hud-filter:focus {
+    width: 132px;
+    border-color: var(--hud-accent);
+    box-shadow: 0 0 8px rgba(77, 243, 255, 0.3);
+  }
   .fx-label {
     color: #9dc6d8;
     font-size: 10px;
@@ -114,7 +139,7 @@
     margin-right: 2px;
   }
   input[type="range"].fx-slider {
-    width: 66px;
+    width: 62px;
     accent-color: var(--hud-accent);
     cursor: pointer;
   }
@@ -147,26 +172,31 @@
   <div class="dock-group">
     <button class="hud-btn is-active" data-preset="0" title="Hotkey: 1">1 CRT</button>
     <button class="hud-btn" data-preset="1" title="Hotkey: 2">2 CYBER</button>
-    <button class="hud-btn" data-preset="2" title="Hotkey: 3">3 RADIO SCOPE</button>
+    <button class="hud-btn" data-preset="2" title="Hotkey: 3">3 SCOPE</button>
     <button class="hud-btn" data-preset="3" title="Hotkey: 4">4 ARCADE</button>
+    <button class="hud-btn is-active" id="btnView" title="Cycle Depth & Scale Layout: CASCADE (giant live text -> shrinking trail), DUAL (2-layer colossal hero + background log), DRUM (3D curved cylinder), FLAT (uniform) (Hotkey: V)">VIEW: CASCADE</button>
   </div>
   <div class="dock-group">
     <button class="hud-btn" id="btnSynth" title="Procedural Log-Reactive Telemetry Synth + Audio FFT (Hotkey: M)">SYNTH: OFF</button>
-    <button class="hud-btn" id="btnAudioIn" title="Click: Capture System/Tab Audio | Shift+Click: Mic Input | Drop audio file anywhere (Hotkey: A)">AUDIO IN: OFF</button>
+    <button class="hud-btn" id="btnAudioIn" title="Click: Capture System/Tab Audio | Shift+Click: Mic Input | Drop audio file anywhere (Hotkey: A)">AUDIO: OFF</button>
   </div>
   <div class="dock-group">
     <button class="hud-btn" id="btnTint" title="Cycle Phosphor Palette (Hotkey: T)">TINT: AUTO</button>
     <span class="fx-label">FX</span>
-    <input type="range" id="fxSlider" class="fx-slider" min="0" max="160" value="100" title="GPU Shader Intensity (0% crisp raw -> 160% overdrive)" />
+    <input type="range" id="fxSlider" class="fx-slider" min="0" max="160" value="100" title="GPU Shader Intensity (0% raw fast-blit -> 160% overdrive)" />
+    <button class="hud-btn" id="btnFps" title="Frame-rate governor: ECO (30fps active / 15fps idle), 60fps, or MAX monitor refresh">FPS: ECO</button>
+  </div>
+  <div class="dock-group">
+    <input type="text" id="filterInput" class="hud-filter" placeholder="Filter (/)" aria-label="Filter log lines" />
+    <button class="hud-btn" id="btnErrJump" title="Jump to next error in scrollback (Hotkey: E)">ERR: 0</button>
+    <button class="hud-btn is-active" id="btnRedact" title="Toggle token & home-path redaction for safe streaming/copying">REDACT: ON</button>
   </div>
   <div class="dock-group">
     <button class="hud-btn" id="btnFontDown" title="Smaller Log Text (Hotkey: -)">A-</button>
     <button class="hud-btn" id="btnFontUp" title="Larger Log Text (Hotkey: +)">A+</button>
     <button class="hud-btn" id="btnPause" title="Pause / Resume Auto-Scroll (Hotkey: Space)">LIVE</button>
-  </div>
-  <div class="dock-group">
-    <button class="hud-btn blast-btn" id="btnTestBlast" title="Fire a synthetic ComfyUI log storm to test GPU shaders & audio (Hotkey: B)">TEST BLAST</button>
-    <button class="hud-btn" id="btnCopy" title="Copy plain-text logs to clipboard">COPY</button>
+    <button class="hud-btn blast-btn" id="btnTestBlast" title="Fire synthetic ComfyUI log storm to test shaders & audio (Hotkey: B)">TEST BLAST</button>
+    <button class="hud-btn" id="btnCopy" title="Copy logs to clipboard (respects REDACT toggle)">COPY</button>
     <button class="hud-btn" id="btnFullscreen" title="Toggle Fullscreen (Hotkey: F)">FULL</button>
   </div>
 </div>
@@ -176,12 +206,12 @@
   "use strict";
 
   // =========================================================================
-  // 1. STATE, RING BUFFER, AUDIO-REACTIVE FFT & TELEMETRY
+  // 1. STATE, URL OVERRIDES, RING BUFFER & TELEMETRY
   // =========================================================================
   const MAX_LINES = 3500;
   const SPECTRUM_BINS = 48;
   const WAVE_SAMPLES = 160;
-  const AUDIO_TEX_WIDTH = 256; // 256x2 R8 texture: row 0 = waveform, row 1 = FFT
+  const AUDIO_TEX_WIDTH = 256;
 
   const PRESET_NAMES = [
     "RETRO CRT PHOSPHOR",
@@ -190,20 +220,65 @@
     "ARCADE NEON // SYNTHWAVE",
   ];
   const TINT_NAMES = ["AUTO", "AMBER P3", "GREEN P31", "ICE CYAN"];
+  const FPS_MODES = ["ECO", "60", "MAX"];
+  const VIEW_MODES = ["CASCADE", "DUAL", "DRUM", "FLAT"];
 
   const params = new URLSearchParams(location.search);
   const preferHighGpu = params.get("gpu") === "high";
 
+  function resolveInitialPreset() {
+    const p = params.get("preset");
+    if (p !== null && !Number.isNaN(Number(p))) {
+      const n = Number(p);
+      // Accept 1..4 (human 1-indexed) or 0..3
+      return Math.max(0, Math.min(3, n >= 1 && n <= 4 ? n - 1 : n));
+    }
+    return Number(localStorage.getItem("logblaster.preset") || 0) % 4;
+  }
+
+  function resolveInitialFpsMode() {
+    const q = (params.get("fps") || "").toUpperCase();
+    if (FPS_MODES.includes(q)) return q;
+    const saved = (localStorage.getItem("logblaster.fpsMode") || "ECO").toUpperCase();
+    return FPS_MODES.includes(saved) ? saved : "ECO";
+  }
+
+  function resolveInitialViewMode() {
+    const q = (params.get("view") || "").toUpperCase();
+    if (VIEW_MODES.includes(q)) return q;
+    const saved = (localStorage.getItem("logblaster.viewMode") || "CASCADE").toUpperCase();
+    return VIEW_MODES.includes(saved) ? saved : "CASCADE";
+  }
+
   const state = {
-    preset: Number(localStorage.getItem("logblaster.preset") || 0) % 4,
-    tintMode: Number(localStorage.getItem("logblaster.tint") || 0) % 4,
-    fxIntensity: Number(localStorage.getItem("logblaster.fx") ?? 100) / 100.0,
+    preset: resolveInitialPreset(),
+    viewMode: resolveInitialViewMode(),
+    tintMode: params.get("tint") !== null
+      ? Math.max(0, Math.min(3, Number(params.get("tint")) || 0))
+      : Number(localStorage.getItem("logblaster.tint") || 0) % 4,
+    fxIntensity: params.get("fx") !== null
+      ? Math.max(0, Math.min(1.6, Number(params.get("fx")) / 100.0))
+      : Number(localStorage.getItem("logblaster.fx") ?? 100) / 100.0,
+    fpsMode: resolveInitialFpsMode(),
+    redactEnabled: params.get("redact") !== null
+      ? params.get("redact") !== "0"
+      : (localStorage.getItem("logblaster.redact") ?? "1") !== "0",
     fontSize: Math.min(22, Math.max(11, Number(localStorage.getItem("logblaster.fontSize") || 14))),
     paused: false,
     scrollBackLines: 0,
+    filterQuery: "",
+
+    // Dirty-gating & error navigation
+    textDirty: true,
+    lastClockDrawMs: 0,
+    newestLineMs: 0,
+    errorCount: 0,
+    errCursorIdx: -1,
 
     // Live ComfyUI connection + execution state
     wsConnected: false,
+    logStreamAvailable: true,
+    warnedNoLogSub: false,
     clientId: "logblaster-" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)),
     runState: "IDLE",
     runStartMs: 0,
@@ -236,18 +311,19 @@
     shockwaveCenter: [0.5, 0.5],
     smoothScrollPx: 0.0,
 
-    // Audio-reactive state (Web Audio API AnalyserNode + Procedural Synth)
+    // Audio-reactive state
     synthEnabled: false,
-    audioInMode: "OFF", // OFF | SYSTEM | MIC | FILE
+    audioInMode: "OFF", // OFF | SYS | MIC | FILE
     audioActive: false,
-    audioBass: 0.0,     // 20-160 Hz smoothed 0..1.5
-    audioMid: 0.0,      // 160-2400 Hz smoothed 0..1.5
-    audioHigh: 0.0,     // 2.4-12 kHz smoothed 0..1.5
+    currentFileObjectUrl: null,
+    audioBass: 0.0,
+    audioMid: 0.0,
+    audioHigh: 0.0,
     bassAvg: 0.12,
     lastBeatMs: 0,
     audioTexBytes: new Uint8Array(AUDIO_TEX_WIDTH * 2),
 
-    // Real-time character/audio spectrum & waveform for 2D HUD deck
+    // Real-time character/audio spectrum & waveform
     spectrum: new Float32Array(SPECTRUM_BINS),
     spectrumPeak: new Float32Array(SPECTRUM_BINS),
     waveform: new Float32Array(WAVE_SAMPLES),
@@ -256,6 +332,7 @@
     // Hardware telemetry
     gpuTelemetry: {
       available: false,
+      metrics_mode: "nvml", // nvml | vram_only
       gpu_name: "Detecting GPU...",
       gpu_util: 0,
       vram_used_mib: 0,
@@ -264,14 +341,29 @@
       power_w: 0,
     },
     shaderRendererName: "WebGL2 GPU",
-    fps: 60,
+    fps: 30,
   };
 
-  // Initialize neutral centerline waveform (128 = 0.0 in unsigned byte)
   state.audioTexBytes.fill(128, 0, AUDIO_TEX_WIDTH);
 
   // =========================================================================
-  // 2. ZERO-OVERHEAD WEB AUDIO FFT + PROCEDURAL LOG-REACTIVE SYNTH ENGINE
+  // 2. PRIVACY / SECRET REDACTION HELPER
+  // =========================================================================
+  function redactSensitiveText(input) {
+    if (!state.redactEnabled || !input) return input;
+    return input
+      .replace(/\b(sk-[A-Za-z0-9_-]{3})[A-Za-z0-9_-]{9,}\b/g, "$1***REDACTED***")
+      .replace(/\b(gh[pousr]_[A-Za-z0-9]{3})[A-Za-z0-9]{12,}\b/g, "$1***REDACTED***")
+      .replace(/\b(hf_[A-Za-z0-9]{3})[A-Za-z0-9]{12,}\b/g, "$1***REDACTED***")
+      .replace(/\b(AIza[0-9A-Za-z_-]{3})[0-9A-Za-z_-]{16,}\b/g, "$1***REDACTED***")
+      .replace(/((?:Bearer|api[_-]?key|access[_-]?token|secret)\s*[:=]\s*)(["']?)[^\s"'&]{8,}\2/gi, "$1$2***REDACTED***$2")
+      .replace(/[A-Za-z]:\\Users\\[^\\\s"']+\\/gi, "~\\")
+      .replace(/[A-Za-z]:\/Users\/[^/\s"']+\//gi, "~/")
+      .replace(/\/(?:Users|home)\/[^/\s"']+\//g, "~/");
+  }
+
+  // =========================================================================
+  // 3. ZERO-ECHO WEB AUDIO FFT + PROCEDURAL LOG-REACTIVE SYNTH ENGINE
   // =========================================================================
   let audioCtx = null;
   let analyser = null;
@@ -295,18 +387,20 @@
     if (!Ctx) return;
 
     audioCtx = new Ctx();
+    // CRITICAL TOPOLOGY: `analyser` is a pure silent tap sink (NOT connected to
+    // `audioCtx.destination`) so external System/Mic capture never echoes!
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512; // 256 frequency bins — native SIMD C++, ~0.04% CPU
+    analyser.fftSize = 512;
     analyser.smoothingTimeConstant = 0.74;
     fftBuf = new Uint8Array(analyser.frequencyBinCount);
     timeBuf = new Uint8Array(analyser.frequencyBinCount);
 
     synthMasterGain = audioCtx.createGain();
     synthMasterGain.gain.value = 0.24;
+    // Audible internal synth connects to BOTH analyser and destination
     synthMasterGain.connect(analyser);
-    analyser.connect(audioCtx.destination);
+    synthMasterGain.connect(audioCtx.destination);
 
-    // Subtle warm analog carrier hum that swells gently during active blasts
     droneOsc = audioCtx.createOscillator();
     droneOsc.type = "triangle";
     droneOsc.frequency.value = 58.0;
@@ -324,7 +418,6 @@
   function playSynthTick(kind, energy) {
     if (!state.synthEnabled || !audioCtx || !synthMasterGain) return;
     const nowMs = performance.now();
-    // Rate-limit rapid log bursts to ~30 ticks/sec for smooth sci-fi mainframe chatter
     if (kind === "normal" && nowMs - lastTickSoundMs < 34) return;
     lastTickSoundMs = nowMs;
 
@@ -343,7 +436,6 @@
       osc.start(t);
       osc.stop(t + 0.25);
     } else if (kind === "complete") {
-      // Warm retro-broadcast completion triad arpeggio
       const notes = [261.63, 392.0, 587.33, 659.25];
       notes.forEach((freq, idx) => {
         const o = audioCtx.createOscillator();
@@ -359,7 +451,6 @@
         o.stop(st + 0.38);
       });
     } else if (kind === "shock") {
-      // Deep cathode/sonar thump on node switch or shockwave
       osc.type = "sine";
       osc.frequency.setValueAtTime(125, t);
       osc.frequency.exponentialRampToValueAtTime(36, t + 0.24);
@@ -381,7 +472,6 @@
       osc.start(t);
       osc.stop(t + 0.075);
     } else {
-      // Crisp soft CRT telemetry data tick
       osc.type = "sine";
       const pitch = 520 + ((state.lineCounter * 73) % 440) + energy * 180;
       osc.frequency.setValueAtTime(pitch, t);
@@ -406,8 +496,14 @@
     }
     if (fileAudioEl) {
       fileAudioEl.pause();
+      fileAudioEl.removeAttribute("src");
+    }
+    if (state.currentFileObjectUrl) {
+      try { URL.revokeObjectURL(state.currentFileObjectUrl); } catch (_) {}
+      state.currentFileObjectUrl = null;
     }
     state.audioInMode = "OFF";
+    state.textDirty = true;
   }
 
   async function toggleExternalAudio(useMic = false) {
@@ -434,15 +530,13 @@
         });
         state.audioInMode = "MIC";
       } else {
-        // System / Tab loopback audio capture (Windows Edge/Chrome supports "Share system audio")
         stream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
         });
-        // Immediately stop the video track so zero GPU/CPU is spent capturing screen pixels!
         stream.getVideoTracks().forEach((vt) => vt.stop());
         if (stream.getAudioTracks().length === 0) {
-          showToast("TIP: Tick 'Also share system audio' in the picker (or Shift+Click for Mic)");
+          showToast("TIP: Tick 'Also share system audio' in picker (or Shift+Click for Mic)");
           return;
         }
         state.audioInMode = "SYS";
@@ -450,7 +544,7 @@
 
       externalStream = stream;
       externalSourceNode = audioCtx.createMediaStreamSource(stream);
-      // Connect external capture ONLY to analyser (not destination) so it never double-echoes!
+      // Terminal analyser ONLY -> zero echo / zero feedback!
       externalSourceNode.connect(analyser);
       stream.getAudioTracks()[0].addEventListener("ended", () => {
         disconnectExternalAudio();
@@ -459,14 +553,14 @@
       });
 
       state.audioActive = true;
+      state.textDirty = true;
       syncControlsUI();
       showToast(`AUDIO REACTIVE LIVE (${state.audioInMode} FFT)`);
     } catch (_) {
-      showToast("AUDIO CAPTURE CANCELLED (Shift+Click AUDIO IN for Mic, or use SYNTH)");
+      showToast("AUDIO CAPTURE CANCELLED (Shift+Click AUDIO for Mic, or use SYNTH)");
     }
   }
 
-  // Drag & drop any .wav / .mp3 / .mp4 file onto the HUD to play & visualize it!
   window.addEventListener("dragover", (ev) => ev.preventDefault());
   window.addEventListener("drop", (ev) => {
     ev.preventDefault();
@@ -478,15 +572,19 @@
       fileAudioEl = new Audio();
       fileAudioEl.crossOrigin = "anonymous";
     }
-    fileAudioEl.src = URL.createObjectURL(file);
+    state.currentFileObjectUrl = URL.createObjectURL(file);
+    fileAudioEl.src = state.currentFileObjectUrl;
     fileAudioEl.loop = false;
-    if (!fileMediaNode && audioCtx) {
+    if (!fileMediaNode && audioCtx && analyser) {
       fileMediaNode = audioCtx.createMediaElementSource(fileAudioEl);
+      // Dropped media file should be both heard and analyzed!
       fileMediaNode.connect(analyser);
+      fileMediaNode.connect(audioCtx.destination);
     }
-    fileAudioEl.play();
+    fileAudioEl.play().catch(() => {});
     state.audioInMode = "FILE";
     state.audioActive = true;
+    state.textDirty = true;
     syncControlsUI();
     ingestLogChunk(`[LogBlaster:SHOCKWAVE] >>> AUDIO-REACTIVE PLAYBACK: ${file.name} <<<\n`);
     showToast(`PLAYING & VISUALIZING: ${file.name}`);
@@ -506,7 +604,6 @@
     }
 
     if (!state.audioActive || !analyser || !fftBuf || !timeBuf) {
-      // Smoothly decay audio uniforms and synthesize procedural log-driven scope texture
       state.audioBass = Math.max(0.0, state.audioBass - dtSec * 2.5);
       state.audioMid = Math.max(0.0, state.audioMid - dtSec * 2.5);
       state.audioHigh = Math.max(0.0, state.audioHigh - dtSec * 2.5);
@@ -523,13 +620,11 @@
     analyser.getByteFrequencyData(fftBuf);
     analyser.getByteTimeDomainData(timeBuf);
 
-    // Copy directly into 256x2 GPU audio texture buffer
     for (let i = 0; i < AUDIO_TEX_WIDTH; i++) {
       state.audioTexBytes[i] = timeBuf[i];
       state.audioTexBytes[AUDIO_TEX_WIDTH + i] = fftBuf[i];
     }
 
-    // Compute Bass (bins 1..8 ~ 40-350Hz), Mid (bins 9..48 ~ 380-2.1kHz), High (bins 49..140 ~ 2.2-6.5kHz)
     let bSum = 0, mSum = 0, hSum = 0;
     for (let i = 1; i <= 8; i++) bSum += fftBuf[i];
     for (let i = 9; i <= 48; i++) mSum += fftBuf[i];
@@ -543,14 +638,12 @@
     state.audioMid = state.audioMid * 0.55 + instMid * 0.45;
     state.audioHigh = state.audioHigh * 0.50 + instHigh * 0.50;
 
-    // Real-time beat-drop detector -> fires radial GPU shockwave through the log text!
     state.bassAvg = state.bassAvg * 0.94 + instBass * 0.06;
     if (instBass > 0.36 && instBass > state.bassAvg * 1.42 && (nowMs - state.lastBeatMs) > 240) {
       state.lastBeatMs = nowMs;
       triggerShockwave(0.3 + Math.random() * 0.4, 0.35 + Math.random() * 0.3);
     }
 
-    // Drive the 48-band HUD spectrum & waveform directly from live audio FFT + log energy!
     for (let b = 0; b < SPECTRUM_BINS; b++) {
       const fftIdx = Math.min(200, Math.floor(Math.pow(b / SPECTRUM_BINS, 1.45) * 180) + 1);
       const fftNorm = (fftBuf[fftIdx] / 255) * 1.22;
@@ -561,10 +654,11 @@
       state.waveform[s] = (timeBuf[tIdx] - 128) / 128.0;
     }
     state.waveWriteIdx = 0;
+    state.textDirty = true;
   }
 
   // =========================================================================
-  // 3. TOAST & UI CONTROLS
+  // 4. TOAST, FILTER, ERROR-JUMP & UI CONTROLS
   // =========================================================================
   const toastEl = document.getElementById("toastMsg");
   let toastTimer = null;
@@ -576,28 +670,60 @@
   }
 
   const presetBtns = Array.from(document.querySelectorAll("[data-preset]"));
+  const btnView = document.getElementById("btnView");
   const btnSynth = document.getElementById("btnSynth");
   const btnAudioIn = document.getElementById("btnAudioIn");
   const btnTint = document.getElementById("btnTint");
   const fxSlider = document.getElementById("fxSlider");
+  const btnFps = document.getElementById("btnFps");
+  const filterInput = document.getElementById("filterInput");
+  const btnErrJump = document.getElementById("btnErrJump");
+  const btnRedact = document.getElementById("btnRedact");
   const btnPause = document.getElementById("btnPause");
+
+  function getFilteredLines() {
+    const q = state.filterQuery.trim().toLowerCase();
+    if (!q) return state.lines;
+    return state.lines.filter((l) => l.viewRaw.toLowerCase().includes(q));
+  }
+
+  function recomputeErrorCount() {
+    let errs = 0;
+    for (let i = 0; i < state.lines.length; i++) {
+      if (state.lines[i].kind === "error") errs++;
+    }
+    state.errorCount = errs;
+  }
 
   function syncControlsUI() {
     presetBtns.forEach((b) => {
       b.classList.toggle("is-active", Number(b.dataset.preset) === state.preset);
     });
+    if (btnView) {
+      btnView.textContent = `VIEW: ${state.viewMode}`;
+      btnView.classList.toggle("is-active", state.viewMode !== "FLAT");
+    }
     btnSynth.textContent = state.synthEnabled ? "SYNTH: ON" : "SYNTH: OFF";
     btnSynth.classList.toggle("audio-active", state.synthEnabled);
 
-    btnAudioIn.textContent = `AUDIO IN: ${state.audioInMode}`;
+    btnAudioIn.textContent = `AUDIO: ${state.audioInMode}`;
     btnAudioIn.classList.toggle("audio-active", state.audioInMode !== "OFF");
 
     btnTint.textContent = "TINT: " + TINT_NAMES[state.tintMode];
     fxSlider.value = String(Math.round(state.fxIntensity * 100));
+    btnFps.textContent = `FPS: ${state.fpsMode}`;
+
+    btnErrJump.textContent = `ERR: ${state.errorCount}`;
+    btnErrJump.classList.toggle("err-active", state.errorCount > 0);
+
+    btnRedact.textContent = state.redactEnabled ? "REDACT: ON" : "REDACT: OFF";
+    btnRedact.classList.toggle("is-active", state.redactEnabled);
+
     btnPause.textContent = state.paused
       ? (state.scrollBackLines > 0 ? `PAUSED (-${state.scrollBackLines})` : "PAUSED")
       : "LIVE";
     btnPause.classList.toggle("is-active", state.paused);
+    state.textDirty = true;
   }
 
   function setPreset(idx) {
@@ -611,6 +737,28 @@
   presetBtns.forEach((b) => {
     b.addEventListener("click", () => setPreset(Number(b.dataset.preset)));
   });
+
+  function cycleViewMode() {
+    const nextIdx = (VIEW_MODES.indexOf(state.viewMode) + 1) % VIEW_MODES.length;
+    state.viewMode = VIEW_MODES[nextIdx];
+    localStorage.setItem("logblaster.viewMode", state.viewMode);
+    for (const line of state.lines) {
+      line._smoothH = 0;
+    }
+    state.nodePulse = Math.max(state.nodePulse, 0.45);
+    syncControlsUI();
+    const descMap = {
+      CASCADE: "GIANT LIVE HERO -> SHRINKING TRAIL",
+      DUAL: "DUAL-LAYER COLOSSAL HERO + DENSE LOG",
+      DRUM: "3D CURVED PERSPECTIVE DRUM + CASCADE",
+      FLAT: "UNIFORM MONOSPACE TERMINAL",
+    };
+    showToast(`VIEW: ${state.viewMode} (${descMap[state.viewMode] || state.viewMode})`);
+  }
+
+  if (btnView) {
+    btnView.addEventListener("click", cycleViewMode);
+  }
 
   btnSynth.addEventListener("click", () => {
     ensureAudioGraph();
@@ -639,17 +787,82 @@
   fxSlider.addEventListener("input", () => {
     state.fxIntensity = Number(fxSlider.value) / 100.0;
     localStorage.setItem("logblaster.fx", fxSlider.value);
+    state.textDirty = true;
+  });
+
+  btnFps.addEventListener("click", () => {
+    const nextIdx = (FPS_MODES.indexOf(state.fpsMode) + 1) % FPS_MODES.length;
+    state.fpsMode = FPS_MODES[nextIdx];
+    localStorage.setItem("logblaster.fpsMode", state.fpsMode);
+    syncControlsUI();
+    const desc = state.fpsMode === "ECO"
+      ? "ECO (30fps active / 15fps quiet)"
+      : (state.fpsMode === "60" ? "60 FPS CAP" : "UNCAPPED MAX REFRESH");
+    showToast(`FRAME GOVERNOR: ${desc}`);
+  });
+
+  filterInput.addEventListener("input", () => {
+    state.filterQuery = filterInput.value || "";
+    state.scrollBackLines = 0;
+    state.textDirty = true;
+  });
+
+  filterInput.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      filterInput.value = "";
+      state.filterQuery = "";
+      state.scrollBackLines = 0;
+      filterInput.blur();
+      state.textDirty = true;
+    }
+  });
+
+  function jumpToNextError() {
+    const activeList = getFilteredLines();
+    const errIndices = [];
+    for (let i = 0; i < activeList.length; i++) {
+      if (activeList[i].kind === "error") errIndices.push(i);
+    }
+    if (!errIndices.length) {
+      showToast("NO ERRORS IN LOG BUFFER");
+      return;
+    }
+    // Cycle backward from newest error through older errors; spotlight directly in Hero slot when non-FLAT
+    state.errCursorIdx = (state.errCursorIdx + 1) % errIndices.length;
+    const targetIdx = errIndices[errIndices.length - 1 - state.errCursorIdx];
+    const marginFromBottom = state.viewMode === "FLAT" ? 4 : 0;
+    const fromEnd = Math.max(0, activeList.length - 1 - targetIdx - marginFromBottom);
+    state.paused = true;
+    state.scrollBackLines = Math.min(Math.max(0, activeList.length - 1), fromEnd);
+    state.flashPulse = 0.55;
+    syncControlsUI();
+    showToast(`ERROR ${state.errCursorIdx + 1}/${errIndices.length}: ${activeList[targetIdx].viewRaw.slice(0, 52)}`);
+  }
+
+  btnErrJump.addEventListener("click", jumpToNextError);
+
+  btnRedact.addEventListener("click", () => {
+    state.redactEnabled = !state.redactEnabled;
+    localStorage.setItem("logblaster.redact", state.redactEnabled ? "1" : "0");
+    // Rebuild display spans from stored raw source so redaction toggles cleanly in ~3ms
+    for (const line of state.lines) {
+      rebuildLineView(line);
+    }
+    syncControlsUI();
+    showToast(state.redactEnabled ? "PRIVACY REDACTION: ON (Tokens & Home Paths Masked)" : "PRIVACY REDACTION: OFF (Raw Local Paths)");
   });
 
   document.getElementById("btnFontDown").addEventListener("click", () => {
     state.fontSize = Math.max(11, state.fontSize - 1);
     localStorage.setItem("logblaster.fontSize", String(state.fontSize));
+    state.textDirty = true;
     showToast(`FONT SIZE: ${state.fontSize}px`);
   });
 
   document.getElementById("btnFontUp").addEventListener("click", () => {
     state.fontSize = Math.min(22, state.fontSize + 1);
     localStorage.setItem("logblaster.fontSize", String(state.fontSize));
+    state.textDirty = true;
     showToast(`FONT SIZE: ${state.fontSize}px`);
   });
 
@@ -660,10 +873,11 @@
   });
 
   document.getElementById("btnCopy").addEventListener("click", async () => {
-    const rawText = state.lines.map((l) => `${l.timeStr} ${l.raw}`).join("\n");
+    const activeList = getFilteredLines();
+    const outText = activeList.map((l) => `${l.timeStr} ${l.viewRaw}`).join("\n");
     try {
-      await navigator.clipboard.writeText(rawText);
-      showToast(`COPIED ${state.lines.length} LOG LINES`);
+      await navigator.clipboard.writeText(outText);
+      showToast(`COPIED ${activeList.length} LOG LINES (${state.redactEnabled ? "REDACTED" : "RAW"})`);
     } catch (_) {
       showToast("CLIPBOARD UNAVAILABLE");
     }
@@ -678,11 +892,12 @@
   });
 
   window.addEventListener("wheel", (ev) => {
+    const activeList = getFilteredLines();
     const deltaLines = Math.sign(ev.deltaY) * 4;
     if (deltaLines < 0) {
       state.paused = true;
       state.scrollBackLines = Math.min(
-        Math.max(0, state.lines.length - 5),
+        Math.max(0, activeList.length - 5),
         state.scrollBackLines - deltaLines
       );
     } else if (state.scrollBackLines > 0) {
@@ -694,10 +909,16 @@
 
   window.addEventListener("keydown", (ev) => {
     if (ev.target && ev.target.tagName === "INPUT") return;
-    if (ev.key === "1") setPreset(0);
+    if (ev.key === "/") {
+      ev.preventDefault();
+      filterInput.focus();
+      filterInput.select();
+    } else if (ev.key === "1") setPreset(0);
     else if (ev.key === "2") setPreset(1);
     else if (ev.key === "3") setPreset(2);
     else if (ev.key === "4") setPreset(3);
+    else if (ev.key === "v" || ev.key === "V") cycleViewMode();
+    else if (ev.key === "e" || ev.key === "E") jumpToNextError();
     else if (ev.key === "m" || ev.key === "M") btnSynth.click();
     else if (ev.key === "a" || ev.key === "A") toggleExternalAudio(Boolean(ev.shiftKey));
     else if (ev.key === "t" || ev.key === "T") btnTint.click();
@@ -708,10 +929,8 @@
     else if (ev.key === "b" || ev.key === "B") startTestBlast();
   });
 
-  syncControlsUI();
-
   // =========================================================================
-  // 4. ANSI + SEMANTIC LOG PARSER & SIGNAL ANALYZER
+  // 5. ANSI + SEMANTIC LOG PARSER & SIGNAL ANALYZER
   // =========================================================================
   const ANSI_16 = {
     30: "#586e75", 31: "#ff4d6d", 32: "#38ffb3", 33: "#ffc845",
@@ -723,6 +942,7 @@
   function triggerShockwave(cx = 0.5, cy = 0.48) {
     state.shockwaveTime = performance.now() * 0.001;
     state.shockwaveCenter = [cx, cy];
+    state.textDirty = true;
   }
 
   function feedSignalAnalyzer(text, energyBoost, kind) {
@@ -762,34 +982,38 @@
     }
   }
 
-  function classifySemanticLine(plain) {
+  function classifySemanticLine(plain, triggerFx = true) {
     if (/\[LogBlaster:SHOCKWAVE\]/i.test(plain)) {
-      triggerShockwave(0.5, 0.5);
-      state.flashPulse = Math.max(state.flashPulse, 0.7);
+      if (triggerFx) {
+        triggerShockwave(0.5, 0.5);
+        state.flashPulse = Math.max(state.flashPulse, 0.7);
+      }
       return { color: "#4df3ff", kind: "shock", energy: 0.9 };
     }
     if (/\[LogBlaster:GLITCH_BURST\]/i.test(plain)) {
-      state.glitchBurst = 1.0;
+      if (triggerFx) state.glitchBurst = 1.0;
       return { color: "#ff3e7f", kind: "error", energy: 1.0 };
     }
     if (/\[LogBlaster:PHOSPHOR_FLASH\]/i.test(plain)) {
-      state.flashPulse = 1.0;
+      if (triggerFx) state.flashPulse = 1.0;
       return { color: "#fff3a1", kind: "complete", energy: 0.95 };
     }
     if (/(\[ERROR\]|Traceback|Exception:|RenderError|CUDA out of memory|\bFAILED\b)/i.test(plain)) {
-      state.glitchBurst = Math.max(state.glitchBurst, 0.85);
+      if (triggerFx) state.glitchBurst = Math.max(state.glitchBurst, 0.85);
       return { color: "#ff4769", kind: "error", energy: 1.0 };
     }
     if (/(\[WARNING\]|\bWARN\b|UserWarning|FutureWarning)/i.test(plain)) {
       return { color: "#ffc94a", kind: "warn", energy: 0.45 };
     }
     if (/(Prompt executed in|obs_publish OK|execution_success|=== COMPLETE ===)/i.test(plain)) {
-      triggerShockwave(0.5, 0.42);
-      state.flashPulse = Math.max(state.flashPulse, 0.85);
+      if (triggerFx) {
+        triggerShockwave(0.5, 0.42);
+        state.flashPulse = Math.max(state.flashPulse, 0.85);
+      }
       return { color: "#4dffb5", kind: "complete", energy: 0.95 };
     }
     if (/(\d+%\|[█▉▊▋▌▍▎▏#=\- ]+\||\bit\/s\b|\bs\/it\b|\btok\/s\b)/.test(plain)) {
-      state.stepPulse = Math.max(state.stepPulse, 0.55);
+      if (triggerFx) state.stepPulse = Math.max(state.stepPulse, 0.55);
       return { color: "#7ef9ff", kind: "progress", energy: 0.65 };
     }
     if (/(\[OldTimeRadio\]|\[OTR\]|\[LogBlaster\]|\[launch\])/i.test(plain)) {
@@ -865,6 +1089,13 @@
     return spans.length ? spans : [{ text: rawSegment, color: baseColor, hot: false }];
   }
 
+  function rebuildLineView(entry) {
+    const viewExpanded = redactSensitiveText(entry.origExpanded);
+    const viewPlain = viewExpanded.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+    entry.viewRaw = viewPlain;
+    entry.spans = tokenizeSpans(viewExpanded, entry.baseColor);
+  }
+
   function formatTime(isoOrNow) {
     const d = isoOrNow ? new Date(isoOrNow) : new Date();
     if (Number.isNaN(d.getTime())) return new Date().toTimeString().slice(0, 8);
@@ -875,38 +1106,57 @@
   }
 
   function appendOrUpdateLine(rawLine, isoTime, replaceLast, silentBackfill = false) {
-    const expanded = rawLine.replace(/\t/g, "  ");
-    const plain = expanded.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
-    if (!plain.trim() && replaceLast) return;
+    const origExpanded = rawLine.replace(/\t/g, "  ");
+    const origPlain = origExpanded.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+    if (!origPlain.trim() && replaceLast) return;
 
-    const sem = classifySemanticLine(plain);
-    const spans = tokenizeSpans(expanded, sem.color);
+    const sem = classifySemanticLine(origPlain, !silentBackfill);
     const now = performance.now();
     const entry = {
       id: ++state.lineCounter,
       ts: silentBackfill ? now - 2000 : now,
       timeStr: formatTime(isoTime),
-      raw: plain,
-      spans,
+      origExpanded,
+      viewRaw: "",
+      spans: [],
+      baseColor: sem.color,
       kind: sem.kind,
       energy: sem.energy,
     };
+    rebuildLineView(entry);
 
     if (replaceLast && state.lines.length > 0) {
+      const prevKind = state.lines[state.lines.length - 1].kind;
       entry.ts = now - 110;
       state.lines[state.lines.length - 1] = entry;
+      if (prevKind !== entry.kind) recomputeErrorCount();
     } else {
       state.lines.push(entry);
+      if (entry.kind === "error") state.errorCount++;
       if (!silentBackfill) {
         state.linesThisSec++;
-        state.smoothScrollPx += state.fontSize * 1.38;
+        const impulse = (state.viewMode === "CASCADE" || state.viewMode === "DRUM")
+          ? state.fontSize * 3.45
+          : state.fontSize * 1.38;
+        state.smoothScrollPx = Math.min(280, state.smoothScrollPx + impulse);
+        state.newestLineMs = now;
       }
       if (state.lines.length > MAX_LINES) {
-        state.lines.splice(0, state.lines.length - MAX_LINES);
+        const dropped = state.lines.splice(0, state.lines.length - MAX_LINES);
+        for (const d of dropped) {
+          if (d.kind === "error") state.errorCount = Math.max(0, state.errorCount - 1);
+        }
       }
     }
+
+    state.textDirty = true;
+    if (entry.kind === "error") {
+      btnErrJump.textContent = `ERR: ${state.errorCount}`;
+      btnErrJump.classList.toggle("err-active", state.errorCount > 0);
+    }
+
     if (!silentBackfill) {
-      feedSignalAnalyzer(plain, sem.energy, sem.kind);
+      feedSignalAnalyzer(entry.viewRaw, sem.energy, sem.kind);
     }
   }
 
@@ -947,8 +1197,10 @@
     }
   }
 
+  syncControlsUI();
+
   // =========================================================================
-  // 5. COMFYUI LIVE WEBSOCKET + LOG SUBSCRIPTION + BROADCAST CHANNEL
+  // 6. COMFYUI LIVE WEBSOCKET + LOG SUBSCRIPTION + DEGRADATION CONTRACT
   // =========================================================================
   let ws = null;
   let reconnectTimer = null;
@@ -971,13 +1223,44 @@
     } catch (_) {}
 
     try {
-      await fetch("/internal/logs/subscribe", {
+      const subRes = await fetch("/internal/logs/subscribe", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clientId: state.clientId, enabled: true }),
       });
-    } catch (_) {}
+      if (!subRes.ok) {
+        state.logStreamAvailable = false;
+        if (!state.warnedNoLogSub) {
+          state.warnedNoLogSub = true;
+          ingestLogChunk(
+            `[WARNING] ComfyUI /internal/logs/subscribe returned HTTP ${subRes.status}; running in /ws workflow-event mode.\n`
+          );
+        }
+      } else {
+        state.logStreamAvailable = true;
+      }
+    } catch (_) {
+      state.logStreamAvailable = false;
+      if (!state.warnedNoLogSub) {
+        state.warnedNoLogSub = true;
+        ingestLogChunk(
+          "[WARNING] ComfyUI /internal/logs/subscribe unreachable; running in /ws workflow-event mode.\n"
+        );
+      }
+    }
   }
+
+  window.addEventListener("pagehide", () => {
+    if (!state.wsConnected || !state.logStreamAvailable) return;
+    try {
+      fetch("/internal/logs/subscribe", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId: state.clientId, enabled: false }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) {}
+  });
 
   function connectComfySocket() {
     clearTimeout(reconnectTimer);
@@ -993,6 +1276,7 @@
 
     ws.addEventListener("open", () => {
       state.wsConnected = true;
+      state.textDirty = true;
       ingestLogChunk("[LogBlaster] Connected to ComfyUI live log + event stream (/ws)\n");
       backfillAndSubscribeLogs();
     });
@@ -1043,7 +1327,11 @@
           state.stepMax = 0;
           triggerShockwave(0.2 + Math.random() * 0.6, 0.35 + Math.random() * 0.3);
           playSynthTick("shock", 0.8);
+          if (!state.logStreamAvailable) {
+            ingestLogChunk(`[ComfyUI] Executing ${state.activeNodeTitle}\n`);
+          }
         }
+        state.textDirty = true;
       } else if (type === "progress") {
         const now = performance.now();
         if (state.lastStepMs > 0 && data?.value > state.stepVal) {
@@ -1060,6 +1348,7 @@
         state.stepMax = Number(data?.max || 0);
         state.stepPulse = 1.0;
         state.runState = "BLASTING";
+        state.textDirty = true;
       } else if (type === "execution_error") {
         state.runState = "ERROR";
         state.glitchBurst = 1.0;
@@ -1073,11 +1362,13 @@
         }
         state.flashPulse = 1.0;
         triggerShockwave(0.5, 0.5);
+        state.textDirty = true;
       }
     });
 
     ws.addEventListener("close", () => {
       state.wsConnected = false;
+      state.textDirty = true;
       reconnectTimer = setTimeout(connectComfySocket, 2200);
     });
 
@@ -1100,9 +1391,11 @@
         }
         if (state.activeNodeId && state.nodeTitleMap.has(state.activeNodeId)) {
           state.activeNodeTitle = `${state.nodeTitleMap.get(state.activeNodeId)} (#${state.activeNodeId})`;
+          state.textDirty = true;
         }
       } else if (m.type === "wake") {
         state.flashPulse = Math.max(state.flashPulse, 0.65);
+        state.textDirty = true;
       }
     });
     setInterval(() => {
@@ -1110,21 +1403,53 @@
     }, 1500);
   } catch (_) {}
 
+  // Poll NVML telemetry first; fall back to ComfyUI /system_stats on Mac MPS / AMD ROCm / CPU!
   async function pollTelemetry() {
+    if (document.hidden) return;
     try {
       const res = await fetch("/logblaster/telemetry", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
-        if (data && typeof data === "object") {
-          state.gpuTelemetry = data;
+        if (data && data.available) {
+          state.gpuTelemetry = { ...data, metrics_mode: "nvml" };
+          state.textDirty = true;
+          return;
+        }
+      }
+    } catch (_) {}
+
+    // Non-NVIDIA fallback: ComfyUI standard /system_stats
+    try {
+      const sysRes = await fetch("/system_stats", { cache: "no-store" });
+      if (sysRes.ok) {
+        const sysData = await sysRes.json();
+        const dev = Array.isArray(sysData?.devices) ? sysData.devices[0] : null;
+        if (dev) {
+          const totalMib = Math.round(Number(dev.vram_total || 0) / (1024 * 1024));
+          const freeMib = Math.round(Number(dev.vram_free || 0) / (1024 * 1024));
+          state.gpuTelemetry = {
+            ok: true,
+            available: totalMib > 0,
+            metrics_mode: "vram_only",
+            gpu_name: String(dev.name || dev.type || "Compute Device"),
+            gpu_util: 0,
+            vram_used_mib: Math.max(0, totalMib - freeMib),
+            vram_total_mib: totalMib,
+            temp_c: 0,
+            power_w: 0,
+          };
+          state.textDirty = true;
         }
       }
     } catch (_) {}
   }
-  setInterval(pollTelemetry, 1000);
+  setInterval(pollTelemetry, 1200);
   pollTelemetry();
 
   setInterval(() => {
+    if (state.cpsDisplay !== state.charsThisSec || state.lpsDisplay !== state.linesThisSec) {
+      state.textDirty = true;
+    }
     state.cpsDisplay = state.charsThisSec;
     state.lpsDisplay = state.linesThisSec;
     state.charsThisSec = 0;
@@ -1132,7 +1457,7 @@
   }, 1000);
 
   // =========================================================================
-  // 6. SYNTHETIC "TEST BLAST" DEMO GENERATOR (HOTKEY: B)
+  // 7. SYNTHETIC "TEST BLAST" DEMO GENERATOR (HOTKEY: B)
   // =========================================================================
   let demoTimers = [];
   function startTestBlast() {
@@ -1216,7 +1541,7 @@
   document.getElementById("btnTestBlast").addEventListener("click", startTestBlast);
 
   // =========================================================================
-  // 7. OFFSCREEN HIGH-DPI 2D LOG TEXT + SPECTRUM CANVAS (TRANSPARENT ALPHA!)
+  // 8. OFFSCREEN HIGH-DPI 2D LOG TEXT + SPECTRUM CANVAS (TRANSPARENT ALPHA!)
   // =========================================================================
   const textCanvas = document.createElement("canvas");
   const ctx = textCanvas.getContext("2d", { alpha: true });
@@ -1235,6 +1560,100 @@
       return { primary: null, bright: "#e6fff5", dim: "#3ca382", accent: "#38ffb3", headerAccent: "#ffb347" };
     }
     return { primary: null, bright: "#ffffff", dim: "#6c8ea3", accent: "#4df3ff", headerAccent: "#4df3ff" };
+  }
+
+  function wrapSpansMonospace(spans, maxCols, maxRows) {
+    let totalLen = 0;
+    for (let i = 0; i < spans.length; i++) {
+      totalLen += spans[i].text ? spans[i].text.length : 0;
+    }
+    if (totalLen === 0) return [[]];
+    if (totalLen <= maxCols && maxRows >= 1) return [spans];
+
+    const plain = spans.map((s) => s.text || "").join("");
+    const safeCols = Math.max(12, maxCols);
+    const intervals = [];
+    let pos = 0;
+
+    while (pos < plain.length && intervals.length < maxRows) {
+      const rem = plain.length - pos;
+      if (rem <= safeCols) {
+        intervals.push([pos, plain.length, false]);
+        break;
+      }
+      if (intervals.length === maxRows - 1) {
+        intervals.push([pos, pos + Math.max(1, safeCols - 1), true]);
+        break;
+      }
+      let splitAt = pos + safeCols;
+      const minBreak = pos + Math.floor(safeCols * 0.56);
+      for (let k = pos + safeCols; k >= minBreak; k--) {
+        const ch = plain[k - 1];
+        if (ch === " " || ch === "/" || ch === "\\" || ch === "|" || ch === "-" || ch === ":" || ch === "]" || ch === ",") {
+          splitAt = k;
+          break;
+        }
+      }
+      intervals.push([pos, splitAt, false]);
+      pos = splitAt;
+      while (pos < plain.length && plain[pos] === " ") pos++;
+    }
+
+    return intervals.map(([rStart, rEnd, ellipsize]) => {
+      const rowSpans = [];
+      let cur = 0;
+      for (let i = 0; i < spans.length; i++) {
+        const sp = spans[i];
+        const t = sp.text || "";
+        const next = cur + t.length;
+        if (next > rStart && cur < rEnd) {
+          const s0 = Math.max(0, rStart - cur);
+          const s1 = Math.min(t.length, rEnd - cur);
+          if (s1 > s0) {
+            rowSpans.push({ text: t.slice(s0, s1), color: sp.color, hot: sp.hot });
+          }
+        }
+        cur = next;
+        if (cur >= rEnd) break;
+      }
+      if (ellipsize) {
+        const tailCol = rowSpans[rowSpans.length - 1]?.color || "#cde8f6";
+        rowSpans.push({ text: "…", color: tailCol, hot: false });
+      }
+      return rowSpans;
+    });
+  }
+
+  function resolveGutterColor(kind, pal) {
+    if (pal.primary) return pal.primary;
+    if (kind === "error") return "#ff3860";
+    if (kind === "warn") return "#ffc845";
+    if (kind === "complete" || kind === "shock") return "#38ffb3";
+    return "#4df3ff";
+  }
+
+  function drawSpanRow(rowSpans, startX, maxRightX, y, lineFs, forceBold, birthFlash, pal) {
+    const family = "'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace";
+    let curX = startX;
+    for (let s = 0; s < rowSpans.length; s++) {
+      const sp = rowSpans[s];
+      if (!sp.text) continue;
+      if (curX > maxRightX) break;
+
+      if (birthFlash > 0.38) {
+        ctx.fillStyle = "#ffffff";
+      } else if (pal.primary) {
+        ctx.fillStyle = sp.hot ? pal.bright : pal.primary;
+      } else {
+        ctx.fillStyle = sp.color;
+      }
+
+      const useBold = forceBold || sp.hot || birthFlash > 0.2;
+      ctx.font = `${useBold ? "bold " : ""}${lineFs}px ${family}`;
+      ctx.fillText(sp.text, curX, y);
+      curX += ctx.measureText(sp.text).width;
+    }
+    return curX;
   }
 
   function renderTextTexture(nowMs, dtSec) {
@@ -1281,7 +1700,11 @@
       : (state.lastElapsedSec > 0 ? state.lastElapsedSec.toFixed(1) + "s" : "0.0s");
     ctx.font = "12px 'Cascadia Mono', 'Consolas', monospace";
     ctx.fillStyle = pal.primary || "#bfe8ff";
-    const nodeText = `NODE: ${state.activeNodeTitle}`.slice(0, 44);
+    const activeList = getFilteredLines();
+    const filterBadge = state.filterQuery.trim()
+      ? ` [FILTER "${state.filterQuery.trim()}" ${activeList.length}/${state.lines.length}]`
+      : "";
+    const nodeText = (`NODE: ${state.activeNodeTitle}` + filterBadge).slice(0, 48);
     ctx.fillText(nodeText, padX, 44);
 
     const barW = Math.min(300, vw * 0.26);
@@ -1305,12 +1728,16 @@
     const specLeft = Math.max(368, vw * 0.34);
     const specRight = Math.min(vw - 296, vw * 0.69);
     const specW = specRight - specLeft;
+    let spectrumStillMoving = false;
     if (specW > 120) {
       const binW = specW / SPECTRUM_BINS;
       const baseY = 76;
       const maxBarH = 54;
 
       for (let i = 0; i < SPECTRUM_BINS; i++) {
+        if (state.spectrum[i] > 0.032 || state.spectrumPeak[i] > 0.032) {
+          spectrumStillMoving = true;
+        }
         state.spectrum[i] = Math.max(0.03, state.spectrum[i] - dtSec * (state.audioActive ? 3.2 : 1.85));
         if (state.spectrum[i] > state.spectrumPeak[i]) {
           state.spectrumPeak[i] = state.spectrum[i];
@@ -1357,7 +1784,7 @@
       ctx.fillText(specLabel, specLeft, 87);
     }
 
-    // Right block: Live RTX 5080 Telemetry + Active Shader GPU Proof
+    // Right block: Live Hardware Telemetry (NVML or /system_stats universal fallback)
     const rightX = vw - padX - 258;
     if (rightX > 360) {
       const gt = state.gpuTelemetry;
@@ -1377,8 +1804,14 @@
 
         ctx.font = "11px 'Cascadia Mono', 'Consolas', monospace";
         ctx.fillStyle = pal.primary || "#d2f0ff";
-        ctx.fillText(`GPU ${String(gt.gpu_util).padStart(3, " ")}% | VRAM ${vramGib}/${totGib}G`, rightX, 38);
-        ctx.fillText(`TMP  ${String(gt.temp_c).padStart(2, " ")}C | PWR ${gt.power_w}W`, rightX, 54);
+        if (gt.metrics_mode === "vram_only") {
+          ctx.fillText(`VRAM ${vramGib} / ${totGib} GiB (${Math.round(vramPct * 100)}%)`, rightX, 38);
+          ctx.fillStyle = pal.dim;
+          ctx.fillText("SOURCE: COMFY /system_stats", rightX, 54);
+        } else {
+          ctx.fillText(`GPU ${String(gt.gpu_util).padStart(3, " ")}% | VRAM ${vramGib}/${totGib}G`, rightX, 38);
+          ctx.fillText(`TMP  ${String(gt.temp_c).padStart(2, " ")}C | PWR ${gt.power_w}W`, rightX, 54);
+        }
 
         const gw = 250;
         ctx.fillStyle = "rgba(120, 170, 195, 0.24)";
@@ -1388,103 +1821,299 @@
       } else {
         ctx.font = "11px 'Cascadia Mono', 'Consolas', monospace";
         ctx.fillStyle = pal.dim;
-        ctx.fillText("NVML TELEMETRY STANDBY", rightX, 40);
+        ctx.fillText("TELEMETRY STANDBY", rightX, 40);
       }
 
       ctx.font = "10px 'Cascadia Mono', 'Consolas', monospace";
       ctx.fillStyle = pal.dim;
-      const fxGpuShort = state.shaderRendererName.slice(0, 27);
-      ctx.fillText(`FX GPU: ${fxGpuShort} (${state.fps}fps)`, rightX, 82);
+      const fxGpuShort = state.shaderRendererName.slice(0, 22);
+      ctx.fillText(`FX: ${fxGpuShort} (${state.fps}fps ${state.fpsMode})`, rightX, 82);
     }
 
-    // --- MAIN BLASTING LOG TEXT VIEWPORT ---
-    const logTop = headerH + 10;
-    const logBottom = vh - 18;
-    const availH = Math.max(60, logBottom - logTop);
+    // --- MAIN BLASTING LOG TEXT VIEWPORT (CASCADE | DUAL | DRUM | FLAT) ---
+    state.headerSplitUv = 1.0 - Math.min(0.32, Math.max(0.08, (headerH + 4) / Math.max(200, vh)));
+    const logTop = headerH + 8;
+    const logBottom = vh - 58; // Keeps foreground Hero text cleanly above #controlDock
+    const availH = Math.max(90, logBottom - logTop);
     const fs = state.fontSize;
-    const lineH = Math.round(fs * 1.42);
-    const visibleCount = Math.max(3, Math.floor(availH / lineH));
+    const monoFamily = "'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace";
 
-    state.smoothScrollPx *= Math.pow(0.0008, dtSec);
+    state.smoothScrollPx *= Math.pow(0.0005, dtSec);
     if (state.smoothScrollPx < 0.35 || state.paused) state.smoothScrollPx = 0;
 
     ctx.beginPath();
-    ctx.rect(0, logTop, vw, availH + 6);
+    ctx.rect(0, logTop, vw, availH + 10);
     ctx.clip();
-
-    const total = state.lines.length;
-    const endIdx = Math.max(0, total - state.scrollBackLines);
-    const startIdx = Math.max(0, endIdx - visibleCount - 1);
-
-    ctx.font = `${fs}px 'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace`;
     ctx.textBaseline = "alphabetic";
 
-    const timeW = fs * 6.2;
-    const textStartX = padX + 10 + timeW;
+    const total = activeList.length;
+    const clampedScrollBack = Math.min(state.scrollBackLines, Math.max(0, total - 1));
+    const endIdx = Math.max(0, total - clampedScrollBack);
 
-    for (let i = startIdx; i < endIdx; i++) {
-      const line = state.lines[i];
-      const rowFromBottom = (endIdx - 1) - i;
-      const y = logBottom - 6 - rowFromBottom * lineH + state.smoothScrollPx;
-      if (y < logTop - lineH || y > logBottom + lineH) continue;
+    if (state.viewMode === "CASCADE" || state.viewMode === "DRUM") {
+      // Giant Foreground Live Stream -> Progressively Shrinking Perspective Trail
+      const isDrum = state.viewMode === "DRUM";
+      const heroMaxFs = Math.max(24, Math.min(Math.round(vw * 0.036), Math.round(fs * 3.25)));
+      const minTrailFs = Math.max(8.5, Math.round(fs * 0.64 * 2) / 2);
+      const maxIndent = isDrum ? vw * 0.125 : vw * 0.05;
 
-      const ageMs = Math.max(0, nowMs - line.ts);
-      const birthFlash = ageMs < 280 ? Math.pow(1.0 - ageMs / 280, 1.7) : 0.0;
+      // Subtle 3D perspective side guide rails + Hero Stage deck bar
+      ctx.save();
+      ctx.globalAlpha = isDrum ? 0.30 : 0.18;
+      ctx.strokeStyle = pal.primary || accent;
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(padX - 6, logBottom + 3);
+      ctx.lineTo(padX + maxIndent - 4, logTop + 4);
+      ctx.moveTo(vw - padX + 6, logBottom + 3);
+      ctx.lineTo(vw - padX - maxIndent + 4, logTop + 4);
+      ctx.stroke();
 
-      if (line.kind !== "normal" || birthFlash > 0.25) {
-        const gutterColor = pal.primary || (
-          line.kind === "error" ? "#ff3860" :
-          line.kind === "warn" ? "#ffc845" :
-          line.kind === "complete" || line.kind === "shock" ? "#38ffb3" :
-          "#4df3ff"
+      ctx.globalAlpha = 0.55;
+      ctx.beginPath();
+      ctx.moveTo(padX - 6, logBottom + 4);
+      ctx.lineTo(vw - padX + 6, logBottom + 4);
+      ctx.stroke();
+      ctx.restore();
+
+      let cursorBottomY = logBottom - 6 + state.smoothScrollPx;
+      for (let i = endIdx - 1; i >= 0; i--) {
+        if (cursorBottomY < logTop - 8) break;
+        const line = activeList[i];
+        const isHeroRow = (i === endIdx - 1);
+
+        const distPx = Math.max(0, (logBottom - 6) - cursorBottomY);
+        const distNorm = Math.min(1.0, distPx / Math.max(120, availH));
+        const scaleCurve = Math.pow(1.0 - distNorm, isDrum ? 2.45 : 2.8);
+        const lineFs = Math.max(
+          minTrailFs,
+          Math.round((minTrailFs + (heroMaxFs - minTrailFs) * scaleCurve) * 2) / 2
         );
-        ctx.fillStyle = birthFlash > 0.45 ? "#ffffff" : gutterColor;
-        ctx.fillRect(padX, y - fs + 2, 3.5, fs + 1);
+
+        const indentX = Math.round(Math.pow(distNorm, 1.4) * maxIndent);
+        const rowLeft = padX + indentX;
+        const rowRight = vw - padX - indentX;
+
+        const isBigTier = lineFs >= 21;
+        const metaFs = isBigTier
+          ? Math.max(11, Math.round(lineFs * 0.36))
+          : Math.max(8.5, Math.round(lineFs * 0.85 * 2) / 2);
+        const metaW = Math.round(metaFs * 5.8);
+        const textStartX = rowLeft + 10 + metaW;
+        const availTextW = Math.max(100, rowRight - textStartX);
+
+        const forceBold = isHeroRow || lineFs >= 25;
+        ctx.font = `${forceBold ? "bold " : ""}${lineFs}px ${monoFamily}`;
+        const charW = Math.max(4, ctx.measureText("M").width);
+        const maxCols = Math.max(14, Math.floor(availTextW / charW));
+        const maxWrap = isHeroRow ? 3 : (lineFs >= 23 ? 2 : 1);
+        const wrappedRows = wrapSpansMonospace(line.spans, maxCols, maxWrap);
+
+        const subLineH = Math.round(lineFs * 1.22);
+        const blockGap = Math.max(3, Math.round(lineFs * 0.24));
+        const targetBlockH = wrappedRows.length * subLineH + blockGap;
+        const blockH = line._smoothH > 0
+          ? line._smoothH + (targetBlockH - line._smoothH) * Math.min(1, dtSec * 22)
+          : targetBlockH;
+        line._smoothH = blockH;
+
+        const blockTopY = cursorBottomY - blockH;
+        if (cursorBottomY >= logTop - subLineH && blockTopY <= logBottom + subLineH * 2) {
+          const ageMs = Math.max(0, nowMs - line.ts);
+          const birthFlash = ageMs < 320 ? Math.pow(1.0 - ageMs / 320, 1.65) : 0.0;
+          const depthAlpha = isHeroRow
+            ? 1.0
+            : Math.max(0.28, 1.0 - Math.pow(distNorm, 1.25) * 0.66);
+          ctx.globalAlpha = depthAlpha;
+
+          const firstBaselineY = blockTopY + subLineH - Math.round(lineFs * 0.16);
+          const barW = isHeroRow ? 5.5 : (lineFs >= 24 ? 4.0 : 2.5);
+          if (isHeroRow || line.kind !== "normal" || birthFlash > 0.2) {
+            ctx.fillStyle = birthFlash > 0.45 ? "#ffffff" : resolveGutterColor(line.kind, pal);
+            ctx.fillRect(
+              rowLeft,
+              firstBaselineY - lineFs * 0.84,
+              barW,
+              wrappedRows.length * subLineH - lineFs * 0.12
+            );
+          }
+
+          ctx.font = `${isHeroRow ? "bold " : ""}${metaFs}px ${monoFamily}`;
+          ctx.fillStyle = isHeroRow ? (pal.primary || accent) : (birthFlash > 0.5 ? pal.bright : pal.dim);
+          ctx.fillText(line.timeStr, rowLeft + barW + 5, firstBaselineY - (isBigTier ? Math.round(lineFs * 0.18) : 0));
+
+          if (isHeroRow) {
+            ctx.font = `bold ${Math.max(10, Math.round(metaFs * 0.82))}px ${monoFamily}`;
+            ctx.fillStyle = pal.bright;
+            const heroTag = state.paused ? "SPOTLIGHT" : "LIVE NOW";
+            ctx.fillText(heroTag, rowLeft + barW + 5, firstBaselineY - Math.round(lineFs * 0.18) + metaFs + 3);
+          }
+
+          let lastRowEndX = textStartX;
+          let lastRowY = firstBaselineY;
+          for (let r = 0; r < wrappedRows.length; r++) {
+            const ry = firstBaselineY + r * subLineH;
+            lastRowY = ry;
+            lastRowEndX = drawSpanRow(
+              wrappedRows[r],
+              textStartX,
+              rowRight,
+              ry,
+              lineFs,
+              forceBold,
+              birthFlash,
+              pal
+            );
+          }
+
+          if (isHeroRow && !state.paused && Math.sin(nowMs * 0.012) > -0.25) {
+            ctx.fillStyle = pal.bright;
+            ctx.fillRect(
+              Math.min(rowRight - lineFs * 0.5, lastRowEndX + 6),
+              lastRowY - lineFs * 0.80,
+              Math.max(8, lineFs * 0.44),
+              lineFs * 0.88
+            );
+          }
+        }
+
+        cursorBottomY -= blockH;
       }
+      ctx.globalAlpha = 1.0;
+    } else {
+      // Uniform Background Stream (used by FLAT and Layer-1 of DUAL)
+      const bgFs = state.viewMode === "DUAL" ? Math.max(11, Math.round(fs * 0.92)) : fs;
+      const lineH = Math.round(bgFs * 1.40);
+      const visibleCount = Math.max(3, Math.floor(availH / lineH));
+      const startIdx = Math.max(0, endIdx - visibleCount - 1);
+      const timeW = bgFs * 6.2;
+      const textStartX = padX + 10 + timeW;
 
-      ctx.fillStyle = birthFlash > 0.55 ? pal.bright : pal.dim;
-      ctx.fillText(line.timeStr, padX + 8, y);
+      ctx.globalAlpha = state.viewMode === "DUAL" ? 0.52 : 1.0;
 
-      let curX = textStartX;
-      for (let s = 0; s < line.spans.length; s++) {
-        const sp = line.spans[s];
-        if (!sp.text) continue;
-        if (curX > vw - padX) break;
+      for (let i = startIdx; i < endIdx; i++) {
+        const line = activeList[i];
+        const rowFromBottom = (endIdx - 1) - i;
+        const y = logBottom - 6 - rowFromBottom * lineH + state.smoothScrollPx;
+        if (y < logTop - lineH || y > logBottom + lineH) continue;
 
-        if (birthFlash > 0.38) {
+        const ageMs = Math.max(0, nowMs - line.ts);
+        const birthFlash = ageMs < 280 ? Math.pow(1.0 - ageMs / 280, 1.7) : 0.0;
+
+        if (line.kind !== "normal" || birthFlash > 0.25) {
+          ctx.fillStyle = birthFlash > 0.45 ? "#ffffff" : resolveGutterColor(line.kind, pal);
+          ctx.fillRect(padX, y - bgFs + 2, 3.5, bgFs + 1);
+        }
+
+        ctx.font = `${bgFs}px ${monoFamily}`;
+        ctx.fillStyle = birthFlash > 0.55 ? pal.bright : pal.dim;
+        ctx.fillText(line.timeStr, padX + 8, y);
+
+        const endX = drawSpanRow(line.spans, textStartX, vw - padX, y, bgFs, false, birthFlash, pal);
+        if (birthFlash > 0.15 && endX < vw - padX) {
           ctx.fillStyle = "#ffffff";
-        } else if (pal.primary) {
-          ctx.fillStyle = sp.hot ? pal.bright : pal.primary;
-        } else {
-          ctx.fillStyle = sp.color;
+          ctx.fillRect(Math.min(vw - padX - 12, endX + 4), y - bgFs + 3, 8 * birthFlash, bgFs - 1);
         }
+      }
+      ctx.globalAlpha = 1.0;
 
-        if (sp.hot || birthFlash > 0.2) {
-          ctx.font = `bold ${fs}px 'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace`;
-        } else {
-          ctx.font = `${fs}px 'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace`;
-        }
-
-        ctx.fillText(sp.text, curX, y);
-        curX += ctx.measureText(sp.text).width;
+      if (state.viewMode === "FLAT" && !state.paused && Math.sin(nowMs * 0.011) > -0.2) {
+        ctx.fillStyle = pal.bright;
+        ctx.fillRect(padX + 8, logBottom - 2, bgFs * 0.65, 3);
       }
 
-      if (birthFlash > 0.15 && curX < vw - padX) {
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(Math.min(vw - padX - 12, curX + 4), y - fs + 3, 8 * birthFlash, fs - 1);
-      }
-    }
+      // LAYER 2 OF DUAL MODE: Colossal Foreground Hero Marquee over Ghosted Background Stream!
+      if (state.viewMode === "DUAL" && endIdx > 0) {
+        const heroLine = activeList[endIdx - 1];
+        const prevLine = endIdx >= 2 ? activeList[endIdx - 2] : null;
+        const colossalFs = Math.max(28, Math.min(Math.round(vw * 0.043), Math.round(fs * 3.85)));
+        const subHeroFs = Math.max(15, Math.round(colossalFs * 0.44));
 
-    if (!state.paused && Math.sin(nowMs * 0.011) > -0.2) {
-      ctx.fillStyle = pal.bright;
-      ctx.fillRect(padX + 8, logBottom - 2, fs * 0.65, 3);
+        ctx.font = `bold ${colossalFs}px ${monoFamily}`;
+        const heroCharW = Math.max(6, ctx.measureText("M").width);
+        const heroAvailW = Math.max(160, vw - padX * 2 - 28);
+        const heroCols = Math.max(14, Math.floor(heroAvailW / heroCharW));
+        const heroRows = wrapSpansMonospace(heroLine.spans, heroCols, 2);
+        const heroSubH = Math.round(colossalFs * 1.18);
+        const bandHeight = heroRows.length * heroSubH + subHeroFs + 48;
+        const bandTop = Math.max(logTop + 18, logBottom - bandHeight);
+
+        // Soft alpha fade of Layer-1 glyphs behind the foreground Hero Stage (preserves WebGL2 bg!)
+        ctx.save();
+        ctx.globalCompositeOperation = "destination-out";
+        const maskGrad = ctx.createLinearGradient(0, bandTop - 26, 0, logBottom + 8);
+        maskGrad.addColorStop(0.0, "rgba(0, 0, 0, 0.0)");
+        maskGrad.addColorStop(0.18, "rgba(0, 0, 0, 0.80)");
+        maskGrad.addColorStop(0.92, "rgba(0, 0, 0, 0.86)");
+        maskGrad.addColorStop(1.0, "rgba(0, 0, 0, 0.35)");
+        ctx.fillStyle = maskGrad;
+        ctx.fillRect(0, bandTop - 26, vw, (logBottom + 8) - (bandTop - 26));
+        ctx.restore();
+
+        // Glowing HUD corner brackets framing the Dual-Layer Hero Stage
+        const bCol = resolveGutterColor(heroLine.kind, pal);
+        ctx.strokeStyle = bCol;
+        ctx.lineWidth = 2.0;
+        const cLen = 18;
+        ctx.beginPath();
+        ctx.moveTo(padX, bandTop + cLen); ctx.lineTo(padX, bandTop); ctx.lineTo(padX + cLen, bandTop);
+        ctx.moveTo(vw - padX - cLen, bandTop); ctx.lineTo(vw - padX, bandTop); ctx.lineTo(vw - padX, bandTop + cLen);
+        ctx.moveTo(padX, logBottom - cLen); ctx.lineTo(padX, logBottom); ctx.lineTo(padX + cLen, logBottom);
+        ctx.moveTo(vw - padX - cLen, logBottom); ctx.lineTo(vw - padX, logBottom); ctx.lineTo(vw - padX, logBottom - cLen);
+        ctx.stroke();
+
+        ctx.font = `bold 12px ${monoFamily}`;
+        ctx.fillStyle = pal.primary || accent;
+        const kicker = `DUAL-LAYER LIVE HERO [${heroLine.timeStr}] // ${state.activeNodeTitle}`.slice(0, 84);
+        ctx.fillText(kicker, padX + 14, bandTop + 16);
+
+        if (prevLine) {
+          ctx.globalAlpha = 0.68;
+          ctx.font = `${subHeroFs}px ${monoFamily}`;
+          const prevCharW = Math.max(4, ctx.measureText("M").width);
+          const prevRows = wrapSpansMonospace(prevLine.spans, Math.floor(heroAvailW / prevCharW), 1);
+          drawSpanRow(prevRows[0], padX + 14, vw - padX - 14, bandTop + 18 + subHeroFs + 4, subHeroFs, false, 0, pal);
+          ctx.globalAlpha = 1.0;
+        }
+
+        const heroAgeMs = Math.max(0, nowMs - heroLine.ts);
+        const heroFlash = heroAgeMs < 320 ? Math.pow(1.0 - heroAgeMs / 320, 1.6) : 0.0;
+        const firstHeroY = bandTop + 24 + subHeroFs + heroSubH - Math.round(colossalFs * 0.14);
+        let endHeroX = padX + 14;
+        let endHeroY = firstHeroY;
+        for (let r = 0; r < heroRows.length; r++) {
+          endHeroY = firstHeroY + r * heroSubH;
+          endHeroX = drawSpanRow(
+            heroRows[r],
+            padX + 14,
+            vw - padX - 14,
+            endHeroY,
+            colossalFs,
+            true,
+            heroFlash,
+            pal
+          );
+        }
+
+        if (!state.paused && Math.sin(nowMs * 0.012) > -0.25) {
+          ctx.fillStyle = pal.bright;
+          ctx.fillRect(
+            Math.min(vw - padX - colossalFs * 0.6, endHeroX + 8),
+            endHeroY - colossalFs * 0.80,
+            Math.max(10, colossalFs * 0.44),
+            colossalFs * 0.88
+          );
+        }
+      }
     }
 
     ctx.restore();
+    state.lastClockDrawMs = nowMs;
+    state.textDirty = spectrumStillMoving || state.smoothScrollPx > 0.35 || (nowMs - state.newestLineMs) < 340;
   }
 
   // =========================================================================
-  // 8. WEBGL2 2-PASS GPU SHADER ENGINE (+ LIVE 256x2 AUDIO WAVE/FFT TEXTURE!)
+  // 9. WEBGL2 2-PASS GPU SHADER ENGINE (+ FX=0 FAST BLIT & ECO GOVERNOR)
   // =========================================================================
   const glCanvas = document.getElementById("glCanvas");
   const gl = glCanvas.getContext("webgl2", {
@@ -1505,7 +2134,11 @@
       if (dbg) {
         const rawRenderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
         const m = rawRenderer.match(/ANGLE \([^,]+,\s*([^,(]+)/i);
-        state.shaderRendererName = (m ? m[1] : rawRenderer).replace(/Direct3D11.*$/i, "").trim() || "WebGL2 GPU";
+        state.shaderRendererName = (m ? m[1] : rawRenderer)
+          .replace(/Direct3D11.*$/i, "")
+          .replace(/NVIDIA GeForce /i, "")
+          .replace(/ Laptop GPU/i, "")
+          .trim() || "WebGL2 GPU";
       }
     } catch (_) {}
   }
@@ -1599,10 +2232,12 @@ out vec4 fragColor;
 
 uniform sampler2D u_textTex;
 uniform sampler2D u_feedbackTex;
-uniform sampler2D u_audioTex; // 256x2 R8: row y=0.25 waveform, row y=0.75 FFT
+uniform sampler2D u_audioTex;
 uniform vec2 u_res;
 uniform float u_time;
 uniform int u_preset;
+uniform int u_viewMode;
+uniform float u_headerSplit;
 uniform float u_fx;
 uniform float u_blastRate;
 uniform float u_stepPulse;
@@ -1648,22 +2283,29 @@ vec3 sampleBloom(sampler2D tex, vec2 uv, vec2 px, float radius) {
 
 void main() {
   float fx = clamp(u_fx, 0.0, 1.6);
+
+  // Fast raw-terminal blit path when FX == 0% (zero bloom, zero warp, minimal GPU cost)
+  if (fx < 0.02) {
+    vec4 rawT = texture(u_textTex, v_uv);
+    vec3 flatBg = vec3(0.015, 0.022, 0.032);
+    fragColor = vec4(mix(flatBg, rawT.rgb, rawT.a), 1.0);
+    return;
+  }
+
   vec2 px = 1.0 / max(u_res, vec2(1.0));
   vec2 uv = v_uv;
 
-  // Subtle bass-thump breathing zoom on heavy audio kicks
-  if (u_audioBass > 0.05 && fx > 0.05) {
+  if (u_audioBass > 0.05) {
     float bassZoom = 1.0 - (u_audioBass * 0.0085 * min(fx, 1.3));
     uv = vec2(0.5) + (uv - vec2(0.5)) * bassZoom;
   }
 
-  // CRT / Cabinet barrel curvature
   float warpStrength = 0.0;
   if (u_preset == 0) warpStrength = 0.056 * min(fx, 1.25);
   else if (u_preset == 2) warpStrength = 0.038 * min(fx, 1.2);
   else if (u_preset == 3) warpStrength = 0.048 * min(fx, 1.2);
 
-  if (u_degauss > 0.01 && fx > 0.05) {
+  if (u_degauss > 0.01) {
     float wob = sin(u_time * 42.0 + uv.y * 12.0) * 0.014 * u_degauss * fx;
     uv.x += wob;
     uv.y += cos(u_time * 35.0) * 0.006 * u_degauss * fx;
@@ -1680,10 +2322,30 @@ void main() {
     return;
   }
 
-  // Radial Shockwave Refraction (fires on node switches, completion, AND audio beat drops!)
+  // 3D Cylindrical Drum & Perspective Tilt for DRUM (2) and subtle glass arch for CASCADE (0)
+  float drumSideShade = 1.0;
+  if ((u_viewMode == 2 || u_viewMode == 0) && uv.y < u_headerSplit && uv.y > 0.055) {
+    float stageSpan = max(0.2, u_headerSplit - 0.055);
+    float stageT = clamp((uv.y - 0.055) / stageSpan, 0.0, 1.0);
+    float dx = uv.x - 0.5;
+    if (u_viewMode == 2) {
+      float xScale = mix(0.94, 1.22, pow(stageT, 1.2));
+      float drumArch = (dx * dx) * 0.115 * sin(stageT * 3.14159) * min(fx, 1.25);
+      float curvedT = pow(stageT, 0.88);
+      uv.x = 0.5 + dx * xScale;
+      uv.y = clamp(0.055 + curvedT * stageSpan + drumArch, 0.002, u_headerSplit - 0.002);
+      float outX = max(0.0, max(-uv.x, uv.x - 1.0));
+      drumSideShade = exp(-outX * 26.0) * (1.0 - 0.32 * (dx * dx * 4.0) * stageT);
+      uv.x = clamp(uv.x, 0.001, 0.999);
+    } else {
+      float subtleArch = (dx * dx) * 0.026 * sin(stageT * 3.14159) * min(fx, 1.2);
+      uv.y = clamp(uv.y + subtleArch, 0.002, u_headerSplit - 0.002);
+    }
+  }
+
   float shockAge = u_time - u_shockTime;
   float shockRing = 0.0;
-  if (shockAge >= 0.0 && shockAge < 1.35 && fx > 0.05) {
+  if (shockAge >= 0.0 && shockAge < 1.35) {
     vec2 aspect = vec2(u_res.x / max(u_res.y, 1.0), 1.0);
     vec2 delta = (uv - u_shockCenter) * aspect;
     float dist = length(delta);
@@ -1695,14 +2357,12 @@ void main() {
     uv -= (dir / aspect) * band * refractScale;
   }
 
-  // Live audio waveform sample at this X/Y coordinate (-1..1)
   float waveAtX = (texture(u_audioTex, vec2(uv.x, 0.25)).r - 0.5) * 2.0;
   float waveAtY = (texture(u_audioTex, vec2(uv.y, 0.25)).r - 0.5) * 2.0;
   float fftAtX  = texture(u_audioTex, vec2(uv.x * 0.72, 0.75)).r;
 
-  // Preset-specific UV displacement directly on log characters
   float sliceGlitch = 0.0;
-  if (u_preset == 1 && fx > 0.05) {
+  if (u_preset == 1) {
     float activity = clamp(u_blastRate * 0.45 + u_nodePulse * 0.9 + u_glitchBurst * 1.4 + u_audioHigh * 0.75, 0.0, 1.9);
     float bandY = floor(uv.y * 34.0 + floor(u_time * 18.0));
     float rnd = hash12(vec2(bandY, floor(u_time * 22.0)));
@@ -1711,13 +2371,12 @@ void main() {
       sliceGlitch = (hash12(vec2(bandY * 1.7, u_time)) - 0.5) * 0.055 * fx * (0.4 + activity);
       uv.x = clamp(uv.x + sliceGlitch, 0.001, 0.999);
     }
-  } else if (u_preset == 2 && fx > 0.05) {
-    // Radio Oscilloscope: real audio pressure wave magnetically deflects the log text scanlines!
+  } else if (u_preset == 2) {
     float carrier = sin(uv.y * 55.0 - u_time * 7.5) * cos(uv.y * 19.0 + u_time * 4.2);
     float energy = (0.0006 + 0.0022 * clamp(u_blastRate, 0.0, 1.2) + 0.0024 * u_stepPulse) * fx;
     float audioDeflect = waveAtY * (0.0045 * clamp(u_audioMid + u_audioBass * 0.6, 0.0, 1.5)) * fx;
     uv.x = clamp(uv.x + carrier * energy + audioDeflect, 0.001, 0.999);
-  } else if (u_glitchBurst > 0.05 && fx > 0.05) {
+  } else if (u_glitchBurst > 0.05) {
     float bandY = floor(uv.y * 28.0);
     float rnd = hash12(vec2(bandY, floor(u_time * 30.0)));
     if (rnd > 0.82) {
@@ -1725,7 +2384,6 @@ void main() {
     }
   }
 
-  // Chromatic Aberration (reacts to audio treble + log blast velocity!)
   float chromaPx = 0.0;
   if (u_preset == 0) {
     float edge = length(uv - 0.5) * 1.5;
@@ -1745,12 +2403,10 @@ void main() {
 
   vec3 crispGlyph = vec3(tL.r * tL.a, tC.g * tC.a, tR.b * tR.a);
 
-  // Audio-bass reactive HDR Phosphor Bloom around log characters
   vec3 trail = texture(u_feedbackTex, uv).rgb;
   float bloomRad = (u_preset == 3 ? 2.8 : (u_preset == 0 ? 2.4 : 2.1)) * (0.6 + 0.6 * fx + 0.55 * u_audioBass);
   vec3 bloom = sampleBloom(u_feedbackTex, uv, px, bloomRad) * (0.65 + 0.65 * fx + 0.55 * u_audioBass);
 
-  // Procedural GPU Backgrounds + Real-Time Audio Oscilloscope / FFT Fields
   vec3 bg = vec3(0.015, 0.022, 0.032);
 
   if (u_preset == 0) {
@@ -1762,12 +2418,10 @@ void main() {
     float laser = exp(-abs(uv.y - fract(-u_time * 0.18)) * 55.0);
     bg = vec3(0.010, 0.016, 0.024) + vec3(0.0, 0.045, 0.055) * gLine * min(fx, 1.0);
     bg += vec3(0.02, 0.10, 0.12) * laser * min(fx, 1.2);
-    // Subtle background FFT skyline glow along bottom
     if (uv.y < fftAtX * 0.22 * min(fx, 1.3)) {
       bg += vec3(0.0, 0.06, 0.08) * (1.0 - uv.y / max(0.01, fftAtX * 0.22));
     }
   } else if (u_preset == 2) {
-    // VINTAGE RADIO OSCILLOSCOPE — Etched Tektronix Graticule + TRUE LIVE AUDIO OSCILLOSCOPE BEAM!
     bg = vec3(0.008, 0.030, 0.022);
     vec2 div = uv * vec2(10.0, 8.0);
     vec2 fDiv = abs(fract(div) - 0.5);
@@ -1785,10 +2439,9 @@ void main() {
     float scopeHalo = exp(-beamDist * 34.0) * (0.26 + 0.25 * u_audioMid);
     bg += (vec3(0.58, 1.0, 0.84) * scopeCore * 0.48 + vec3(0.08, 0.68, 0.44) * scopeHalo) * min(fx, 1.35);
   } else {
-    // ARCADE NEON — Audio-reactive 3D synthwave horizon grid + FFT equalizer horizon!
     bg = mix(vec3(0.025, 0.008, 0.048), vec3(0.008, 0.020, 0.045), uv.y);
     float horizonY = 0.36 + u_audioBass * 0.035 * min(fx, 1.3);
-    if (uv.y < horizonY && fx > 0.05) {
+    if (uv.y < horizonY) {
       float py = max(0.015, horizonY - uv.y);
       float z = 0.14 / py;
       float xProj = (uv.x - 0.5) * z * 2.4;
@@ -1797,14 +2450,14 @@ void main() {
       float fade = smoothstep(horizonY, 0.02, uv.y);
       bg += vec3(0.48 + u_audioBass * 0.35, 0.06, 0.42) * max(gx, gz) * fade * 0.45 * min(fx, 1.25);
     }
-    // Horizon FFT equalizer silhouette
     float eqTop = horizonY + fftAtX * 0.14 * min(fx, 1.3);
     if (uv.y >= horizonY && uv.y < eqTop) {
       bg += vec3(0.32, 0.05, 0.28) * (1.0 - (uv.y - horizonY) / max(0.005, eqTop - horizonY)) * 0.45;
     }
   }
 
-  vec3 col = bg + trail * 0.55 + bloom;
+  // Suppress old feedback ghosting directly underneath crisp foreground glyph interiors so huge fast text never smears
+  vec3 col = bg + trail * (0.54 * (1.0 - tC.a * 0.72)) + bloom;
 
   if (u_preset == 3 && fx > 0.1) {
     vec3 neonGrad = mix(vec3(1.0, 0.38, 0.82), vec3(0.35, 0.96, 1.0), fract(uv.y * 2.2 - u_time * 0.25));
@@ -1812,7 +2465,7 @@ void main() {
     crispGlyph = mix(crispGlyph, crispGlyph * 0.55 + neonGrad * luma * 0.85, 0.38 * min(fx, 1.2));
   }
 
-  col = max(col, crispGlyph) + crispGlyph * (0.22 + 0.16 * u_audioBass) * fx;
+  col = (max(col, crispGlyph) + crispGlyph * (0.22 + 0.16 * u_audioBass) * fx) * drumSideShade;
 
   if (shockRing > 0.002) {
     vec3 ringCol = u_preset == 3 ? vec3(1.0, 0.32, 0.78) : vec3(0.35, 0.95, 1.0);
@@ -1823,19 +2476,17 @@ void main() {
     col = mix(col, col.gbr + vec3(0.08, 0.0, 0.06), 0.35);
   }
 
-  if (fx > 0.04) {
-    float scanFreq = u_res.y * 0.5;
-    float scanWave = 0.5 + 0.5 * sin(uv.y * scanFreq * 3.14159);
-    float charBrightness = clamp(dot(crispGlyph, vec3(0.333)), 0.0, 1.0);
-    float scanDepth = (u_preset == 0 ? 0.26 : (u_preset == 2 ? 0.16 : 0.14)) * min(fx, 1.3) * (1.0 - charBrightness * 0.58);
-    col *= (1.0 - scanDepth * scanWave);
+  float scanFreq = u_res.y * 0.5;
+  float scanWave = 0.5 + 0.5 * sin(uv.y * scanFreq * 3.14159);
+  float charBrightness = clamp(dot(crispGlyph, vec3(0.333)), 0.0, 1.0);
+  float scanDepth = (u_preset == 0 ? 0.26 : (u_preset == 2 ? 0.16 : 0.14)) * min(fx, 1.3) * (1.0 - charBrightness * 0.58);
+  col *= (1.0 - scanDepth * scanWave);
 
-    if (u_preset == 0 || u_preset == 3) {
-      float triad = mod(floor(uv.x * u_res.x), 3.0);
-      vec3 mask = triad < 1.0 ? vec3(1.06, 0.96, 0.96)
-                : (triad < 2.0 ? vec3(0.96, 1.06, 0.96) : vec3(0.96, 0.96, 1.06));
-      col *= mix(vec3(1.0), mask, 0.45 * min(fx, 1.0));
-    }
+  if (u_preset == 0 || u_preset == 3) {
+    float triad = mod(floor(uv.x * u_res.x), 3.0);
+    vec3 mask = triad < 1.0 ? vec3(1.06, 0.96, 0.96)
+              : (triad < 2.0 ? vec3(0.96, 1.06, 0.96) : vec3(0.96, 0.96, 1.06));
+    col *= mix(vec3(1.0), mask, 0.45 * min(fx, 1.0));
   }
 
   col += vec3(0.20, 0.38, 0.35) * u_flashPulse * 0.32 * min(fx, 1.2);
@@ -1918,6 +2569,7 @@ void main() {
     textCanvas.width = w;
     textCanvas.height = h;
     textCanvas._dpr = dpr;
+    state.textDirty = true;
 
     if (!gl) return;
 
@@ -1960,7 +2612,8 @@ void main() {
       fbUniforms[u] = gl.getUniformLocation(feedbackProg, u);
     }
     for (const u of [
-      "u_textTex", "u_feedbackTex", "u_audioTex", "u_res", "u_time", "u_preset", "u_fx",
+      "u_textTex", "u_feedbackTex", "u_audioTex", "u_res", "u_time", "u_preset",
+      "u_viewMode", "u_headerSplit", "u_fx",
       "u_blastRate", "u_stepPulse", "u_nodePulse", "u_glitchBurst",
       "u_flashPulse", "u_degauss", "u_shockTime", "u_shockCenter",
       "u_audioBass", "u_audioMid", "u_audioHigh",
@@ -1973,28 +2626,53 @@ void main() {
   resizePipelines();
 
   // =========================================================================
-  // 9. MAIN RENDER LOOP
+  // 10. ECO-GOVERNED MAIN RENDER LOOP + DIRTY-GATED TEXTURE UPLOADS
   // =========================================================================
-  let lastFrameMs = performance.now();
+  let lastDrawMs = 0;
   let fpsFrames = 0;
-  let fpsTimerMs = lastFrameMs;
+  let fpsTimerMs = performance.now();
   let pingPong = false;
+
+  function targetFrameIntervalMs(nowMs) {
+    if (state.fpsMode === "MAX") return 0;
+    if (state.fpsMode === "60") return 15.8;
+    // ECO mode: 30 FPS when workflow/audio/pulses are active; 15 FPS when quiet/idle!
+    const tSec = nowMs * 0.001;
+    const isAnimated =
+      state.runState === "BLASTING" ||
+      state.audioActive ||
+      state.textDirty ||
+      state.blastRate > 0.02 ||
+      state.stepPulse > 0.02 ||
+      state.nodePulse > 0.02 ||
+      state.glitchBurst > 0.02 ||
+      state.flashPulse > 0.02 ||
+      state.degaussWobble > 0.02 ||
+      (tSec - state.shockwaveTime) < 1.4;
+    return isAnimated ? 32.0 : 65.0;
+  }
 
   function renderFrame(nowMs) {
     requestAnimationFrame(renderFrame);
     if (document.hidden) {
-      lastFrameMs = nowMs;
+      lastDrawMs = nowMs;
       return;
     }
 
-    const dtSec = Math.min(0.1, Math.max(0.001, (nowMs - lastFrameMs) / 1000));
-    lastFrameMs = nowMs;
+    const minInterval = targetFrameIntervalMs(nowMs);
+    if (minInterval > 0 && (nowMs - lastDrawMs) < minInterval) {
+      return;
+    }
+
+    const dtSec = lastDrawMs > 0 ? Math.min(0.12, Math.max(0.001, (nowMs - lastDrawMs) / 1000)) : 0.016;
+    lastDrawMs = nowMs;
 
     fpsFrames++;
-    if (nowMs - fpsTimerMs >= 500) {
+    if (nowMs - fpsTimerMs >= 600) {
       state.fps = Math.round((fpsFrames * 1000) / (nowMs - fpsTimerMs));
       fpsFrames = 0;
       fpsTimerMs = nowMs;
+      state.textDirty = true;
     }
 
     state.blastRate = Math.max(0.0, state.blastRate - dtSec * 0.72);
@@ -2005,55 +2683,68 @@ void main() {
     state.degaussWobble = Math.max(0.0, state.degaussWobble - dtSec * 1.4);
 
     updateAudioAnalysis(nowMs, dtSec);
-    renderTextTexture(nowMs, dtSec);
+
+    // Dirty-gate 2D canvas rasterization & texture upload (refresh every 480ms idle for cursor/timer)
+    const needCanvasUpload =
+      state.textDirty ||
+      state.runState === "BLASTING" ||
+      (nowMs - state.lastClockDrawMs) >= 480;
+
+    if (needCanvasUpload) {
+      renderTextTexture(nowMs, dtSec);
+    }
+
     if (!gl || !feedbackProg || !compositeProg) return;
 
     const w = glCanvas.width;
     const h = glCanvas.height;
     const tSec = nowMs * 0.001;
 
-    // Upload 2D log text canvas -> TEXTURE0
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, textTex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+    if (needCanvasUpload) {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, textTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+    }
 
-    // Upload 512-byte live audio waveform+FFT -> TEXTURE2 (0.002ms!)
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, audioTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, AUDIO_TEX_WIDTH, 2, gl.RED, gl.UNSIGNED_BYTE, state.audioTexBytes);
 
-    const readTex = pingPong ? texA : texB;
-    const writeFbo = pingPong ? fboB : fboA;
-    const writeTex = pingPong ? texB : texA;
-    pingPong = !pingPong;
-
     gl.bindVertexArray(emptyVao);
 
-    // PASS 1 -> Ping-Pong Temporal Feedback FBO
-    gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
-    gl.viewport(0, 0, w, h);
-    gl.useProgram(feedbackProg);
+    let writeTex = pingPong ? texB : texA;
+    // Fast-path: skip Pass 1 feedback FBO completely when FX == 0%
+    if (state.fxIntensity >= 0.02) {
+      const readTex = pingPong ? texA : texB;
+      const writeFbo = pingPong ? fboB : fboA;
+      writeTex = pingPong ? texB : texA;
+      pingPong = !pingPong;
 
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, textTex);
-    gl.uniform1i(fbUniforms.u_textTex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
+      gl.viewport(0, 0, w, h);
+      gl.useProgram(feedbackProg);
 
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, readTex);
-    gl.uniform1i(fbUniforms.u_prevTex, 1);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, textTex);
+      gl.uniform1i(fbUniforms.u_textTex, 0);
 
-    gl.uniform2f(fbUniforms.u_res, w, h);
-    gl.uniform1f(fbUniforms.u_time, tSec);
-    gl.uniform1i(fbUniforms.u_preset, state.preset);
-    gl.uniform1f(fbUniforms.u_fx, state.fxIntensity);
-    gl.uniform1f(fbUniforms.u_blastRate, state.blastRate);
-    gl.uniform1f(fbUniforms.u_audioBass, state.audioBass);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, readTex);
+      gl.uniform1i(fbUniforms.u_prevTex, 1);
 
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.uniform2f(fbUniforms.u_res, w, h);
+      gl.uniform1f(fbUniforms.u_time, tSec);
+      gl.uniform1i(fbUniforms.u_preset, state.preset);
+      gl.uniform1f(fbUniforms.u_fx, state.fxIntensity);
+      gl.uniform1f(fbUniforms.u_blastRate, state.blastRate);
+      gl.uniform1f(fbUniforms.u_audioBass, state.audioBass);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
 
     // PASS 2 -> Final Audio-Reactive GPU Composite
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -2075,6 +2766,8 @@ void main() {
     gl.uniform2f(compUniforms.u_res, w, h);
     gl.uniform1f(compUniforms.u_time, tSec);
     gl.uniform1i(compUniforms.u_preset, state.preset);
+    gl.uniform1i(compUniforms.u_viewMode, Math.max(0, VIEW_MODES.indexOf(state.viewMode)));
+    gl.uniform1f(compUniforms.u_headerSplit, state.headerSplitUv || 0.88);
     gl.uniform1f(compUniforms.u_fx, state.fxIntensity);
     gl.uniform1f(compUniforms.u_blastRate, state.blastRate);
     gl.uniform1f(compUniforms.u_stepPulse, state.stepPulse);
@@ -2091,8 +2784,8 @@ void main() {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  ingestLogChunk("[LogBlaster] Audio-Reactive WebGL2 GPU Log Visualizer ready (Keys: 1-4 Shaders | M Synth | A Audio In | B Test Blast)\n");
-  ingestLogChunk(`[LogBlaster] Active Shader GPU: ${state.shaderRendererName} (powerPreference=${preferHighGpu ? "high-performance" : "low-power"})\n`);
+  ingestLogChunk("[LogBlaster] Audio-Reactive WebGL2 GPU Log Visualizer ready (1-4 Shaders | V View | / Filter | E Errors | M Synth | A Audio | B Blast)\n");
+  ingestLogChunk(`[LogBlaster] View: ${state.viewMode} | WebGL2: ${state.shaderRendererName} | FPS: ${state.fpsMode} | Redaction: ${state.redactEnabled ? "ON" : "OFF"}\n`);
   connectComfySocket();
   requestAnimationFrame(renderFrame);
 })();

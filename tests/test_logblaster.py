@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
 import json
-import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict
@@ -25,16 +27,25 @@ def _load_pkg_module(name: str, rel_path: str):
     return mod
 
 
-def test_no_utf8_bom_anywhere() -> None:
+def test_no_utf8_bom_or_zero_byte_files() -> None:
     exts = {".py", ".js", ".html", ".toml", ".md", ".bat", ".ps1"}
     checked = 0
     for path in REPO_ROOT.rglob("*"):
-        if path.is_file() and path.suffix.lower() in exts and ".git" not in path.parts:
+        if (
+            path.is_file()
+            and path.suffix.lower() in exts
+            and ".git" not in path.parts
+            and "kibitz-runs" not in path.parts
+            and ".kibitz" not in path.parts
+        ):
             raw = path.read_bytes()
+            assert len(raw) > 0, f"0-byte file: {path}"
             assert not raw.startswith(b"\xef\xbb\xbf"), f"BOM found in {path}"
             raw.decode("utf-8")
+            if path.suffix.lower() == ".py":
+                ast.parse(raw.decode("utf-8"), filename=str(path))
             checked += 1
-    assert checked >= 7
+    assert checked >= 8
 
 
 def test_telemetry_snapshot_schema_and_no_paths() -> None:
@@ -84,7 +95,7 @@ def test_stage_cue_node_contract(capsys) -> None:
     assert "ACT II DROP" in captured
 
 
-def test_http_routes_and_shader_html() -> None:
+def test_http_routes_shaders_and_hardened_contracts() -> None:
     sys.modules.pop("_comfyui_logblaster_singleton", None)
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
@@ -107,24 +118,43 @@ def test_http_routes_and_shader_html() -> None:
 
     stub_server = StubPromptServer()
     assert init_mod.register_routes(stub_server) is True
+    # Duplicate registration guard must return False on second call
+    assert init_mod.register_routes(stub_server) is False
     assert "/logblaster" in stub_server.routes.handlers
     assert "/logblaster/telemetry" in stub_server.routes.handlers
 
     html_resp: web.Response = asyncio.run(stub_server.routes.handlers["/logblaster"](None))
     assert html_resp.status == 200
     assert "Access-Control-Allow-Origin" not in html_resp.headers
+    assert html_resp.headers.get("Cache-Control") == "no-store"
     html_body = html_resp.text
     assert html_body is not None
+
+    # 4 WebGL2 shaders + multi-scale view modes (CASCADE | DUAL | DRUM | FLAT)
     assert "#version 300 es" in html_body
     assert "/internal/logs/subscribe" in html_body
     assert "RETRO CRT PHOSPHOR" in html_body
     assert "CYBERPUNK GLITCH // MATRIX" in html_body
     assert "VINTAGE RADIO OSCILLOSCOPE" in html_body
     assert "ARCADE NEON // SYNTHWAVE" in html_body
+    assert 'const VIEW_MODES = ["CASCADE", "DUAL", "DRUM", "FLAT"]' in html_body
+    assert "wrapSpansMonospace" in html_body
+    assert "u_viewMode" in html_body
+    assert "VIEW: CASCADE" in html_body
+
+    # Bounded render overhead, privacy redaction, fallback telemetry & unsubscribe
     assert 'powerPreference: preferHighGpu ? "high-performance" : "low-power"' in html_body
+    assert "FPS: ECO" in html_body
+    assert "redactSensitiveText" in html_body
+    assert "/system_stats" in html_body
+    assert "keepalive: true" in html_body
+
+    # Zero-echo Web Audio topology: analyser must NEVER connect to audioCtx.destination
     assert "createAnalyser" in html_body
     assert "u_audioTex" in html_body
-    assert "SYNTH: OFF" in html_body
+    assert "analyser.connect(audioCtx.destination)" not in html_body
+    assert "externalSourceNode.connect(analyser)" in html_body
+    assert "synthMasterGain.connect(audioCtx.destination)" in html_body
 
     telem_resp: web.Response = asyncio.run(
         stub_server.routes.handlers["/logblaster/telemetry"](None)
@@ -133,3 +163,22 @@ def test_http_routes_and_shader_html() -> None:
     assert "Access-Control-Allow-Origin" not in telem_resp.headers
     telem_data = json.loads(telem_resp.text)
     assert "vram_used_mib" in telem_data
+
+
+def test_frontend_js_syntax(tmp_path: Path) -> None:
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return
+    js_file = REPO_ROOT / "js" / "log_blaster.js"
+    proc = subprocess.run([node_bin, "--check", str(js_file)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+    html_text = (REPO_ROOT / "web_app" / "index.html").read_text(encoding="utf-8")
+    m = re.search(r"<script>([\s\S]*)</script>", html_text)
+    assert m is not None, "Missing <script> block in web_app/index.html"
+    inline_js = tmp_path / "inline_app.js"
+    inline_js.write_text(m.group(1), encoding="utf-8")
+    proc_inline = subprocess.run(
+        [node_bin, "--check", str(inline_js)], capture_output=True, text=True
+    )
+    assert proc_inline.returncode == 0, proc_inline.stderr
