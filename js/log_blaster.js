@@ -5,7 +5,7 @@
  * - Automatically pops open (or wakes without reloading) the WebGL2 GPU Shader
  *   Log HUD window whenever a workflow starts running (both via UI Queue Prompt
  *   and external/headless API runs).
- * - Bridges human-readable node titles and workflow events over BroadcastChannel
+ * - Bridges human-readable node titles from `app.graph` over BroadcastChannel
  *   so the HUD displays real node titles alongside blasting logs.
  */
 import { app } from "../../scripts/app.js";
@@ -217,13 +217,6 @@ function requestExternalRunAutoOpen() {
   }, 180);
 }
 
-function relayComfyEvent(eventName, detail) {
-  if (!bus) return;
-  try {
-    bus.postMessage({ type: "comfy_event", event: eventName, data: detail || {} });
-  } catch (_) {}
-}
-
 function mountToolbarControls() {
   if (document.getElementById("comfy-logblaster-pill")) return;
 
@@ -343,22 +336,11 @@ app.registerExtension({
       };
     }
 
-    // Relay execution events & catch external/headless API runs while ComfyUI UI is open
-    for (const evName of [
-      "execution_start",
-      "executing",
-      "progress",
-      "execution_error",
-      "execution_success",
-      "execution_interrupted",
-    ]) {
-      api.addEventListener(evName, (ev) => {
-        if (evName === "execution_start") {
-          requestExternalRunAutoOpen();
-        }
-        relayComfyEvent(evName, ev?.detail);
-      });
-    }
+    // Catch external/headless API runs while ComfyUI UI is open.
+    // Execution events themselves reach /logblaster directly over /ws via _install_observer_tap.
+    api.addEventListener("execution_start", () => {
+      requestExternalRunAutoOpen();
+    });
 
     // `status` is always broadcast (`sid=None`), catching headless runs queued without `client_id`
     api.addEventListener("status", (ev) => {
@@ -369,7 +351,6 @@ app.registerExtension({
         }
         lastQueueRemaining = rem;
       }
-      relayComfyEvent("status", { status: ev?.detail?.status ? ev.detail.status : ev?.detail });
     });
   },
 });

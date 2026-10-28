@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
+import pytest
 from aiohttp import web
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -94,8 +95,6 @@ def test_telemetry_unavailable_and_explicit_non_fallback() -> None:
     assert snap["device_index"] is None
     assert snap["vram_total_mib"] == 0
 
-    # Explicit invalid LOGBLASTER_NVML_INDEX or out-of-range device_index must NOT
-    # silently fall back to GPU 0!
     invalid_env_reader = telemetry.NvmlReader(env={"LOGBLASTER_NVML_INDEX": "not_an_index"})
     invalid_snap = invalid_env_reader.snapshot()
     assert invalid_snap["available"] is False
@@ -116,9 +115,7 @@ def test_stage_cue_node_contract_and_cache_semantics(capsys) -> None:
     assert "passthrough" in spec["optional"]
     assert "always_fire" in spec["optional"]
 
-    # Default always_fire=False preserves ComfyUI downstream execution cache
     assert cls.IS_CHANGED(banner="ACT II", fx_trigger="SHOCKWAVE", always_fire=False) == "SHOCKWAVE:ACT II"
-    # Opt-in always_fire=True forces execution via NaN
     nan_token = cls.IS_CHANGED(banner="ACT II", fx_trigger="SHOCKWAVE", always_fire=True)
     assert isinstance(nan_token, float) and math.isnan(nan_token)
 
@@ -141,6 +138,9 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     init_mod = _load_pkg_module("lb_init_test", "__init__.py")
+    init_src = (REPO_ROOT / "__init__.py").read_text(encoding="utf-8")
+    assert "await asyncio.to_thread(_read_html_file)" in init_src
+    assert "await asyncio.to_thread(get_gpu_telemetry)" in init_src
 
     class StubRouteTable:
         def __init__(self) -> None:
@@ -156,7 +156,7 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     class StubPromptServer:
         def __init__(self) -> None:
             self.routes = StubRouteTable()
-            self.sockets: Dict[str, Any] = {
+            self.sockets: Any = {
                 "ui-tab-primary": object(),
                 "logblaster-observer-1": object(),
             }
@@ -167,12 +167,11 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
 
     stub_server = StubPromptServer()
     assert init_mod.register_routes(stub_server) is True
-    # Duplicate registration guard must return False on second call
     assert init_mod.register_routes(stub_server) is False
     assert "/logblaster" in stub_server.routes.handlers
     assert "/logblaster/telemetry" in stub_server.routes.handlers
 
-    # Directed execution events (sid != None) must forward to logblaster-* observer sockets
+    # Directed execution events (sid != None) forward to logblaster-* observer sockets
     stub_server.send_sync("executing", {"node": "42", "prompt_id": "p1"}, "ui-tab-primary")
     assert stub_server.sent == [
         ("executing", {"node": "42", "prompt_id": "p1"}, "ui-tab-primary"),
@@ -180,18 +179,30 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     ]
     stub_server.sent.clear()
 
-    # Broadcast events (sid is None) are already delivered to all sockets -> must NOT duplicate
+    # Broadcast events (sid is None) do NOT duplicate
     stub_server.send_sync("status", {"status": {"exec_info": {"queue_remaining": 1}}}, None)
     assert stub_server.sent == [
         ("status", {"status": {"exec_info": {"queue_remaining": 1}}}, None),
     ]
     stub_server.sent.clear()
 
-    # Events already addressed to a logblaster-* socket must NOT self-echo
+    # Events already addressed to a logblaster-* socket do NOT self-echo
     stub_server.send_sync("execution_start", {"prompt_id": "p2"}, "logblaster-observer-1")
     assert stub_server.sent == [
         ("execution_start", {"prompt_id": "p2"}, "logblaster-observer-1"),
     ]
+    stub_server.sent.clear()
+
+    # Broken/mutated sockets attribute must never raise into PromptExecutor
+    class BrokenSocketsDict(dict):
+        def keys(self):  # type: ignore[override]
+            raise RuntimeError("simulated concurrent socket dict error")
+
+    orig_sockets = stub_server.sockets
+    stub_server.sockets = BrokenSocketsDict({"logblaster-x": object()})
+    stub_server.send_sync("executing", {"node": "99"}, "ui-tab-primary")
+    assert stub_server.sent == [("executing", {"node": "99"}, "ui-tab-primary")]
+    stub_server.sockets = orig_sockets
 
     html_resp: web.Response = asyncio.run(stub_server.routes.handlers["/logblaster"](None))
     assert html_resp.status == 200
@@ -200,7 +211,6 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     html_body = html_resp.text
     assert html_body is not None
 
-    # 4 WebGL2 shaders + multi-scale view modes (CASCADE | DUAL | DRUM | FLAT) + COMFY B&Y palette
     assert "#version 300 es" in html_body
     assert "/internal/logs/subscribe" in html_body
     assert "RETRO CRT PHOSPHOR" in html_body
@@ -210,15 +220,16 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     assert 'const VIEW_MODES = ["CASCADE", "DUAL", "DRUM", "FLAT"]' in html_body
     assert 'const TINT_NAMES = ["AUTO", "COMFY B&Y", "AMBER P3", "GREEN P31", "ICE CYAN"]' in html_body
     assert "wrapSpansMonospace" in html_body
+    assert "injectLocalLine" in html_body
     assert "u_viewMode" in html_body
     assert "u_tintMode" in html_body
     assert "VIEW: CASCADE" in html_body
 
-    # Bounded render overhead, privacy redaction, context recovery, subscribe-before-backfill & teardown
     assert 'powerPreference: preferHighGpu ? "high-performance" : "low-power"' in html_body
     assert "FPS: ECO" in html_body
     assert "MAX_RENDER_PIXELS" in html_body
     assert "MAX_LINE_CHARS" in html_body
+    assert "MAX_LIVE_BUFFER_CHARS" in html_body
     assert "checkFramebufferStatus" in html_body
     assert "webglcontextlost" in html_body
     assert "redactSensitiveText" in html_body
@@ -228,7 +239,6 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     assert "syncLogsAfterOpen" in html_body
     assert "keepalive: true" in html_body
 
-    # Zero-echo Web Audio topology: analyser must NEVER connect to audioCtx.destination
     assert "createAnalyser" in html_body
     assert "u_audioTex" in html_body
     assert "analyser.connect(audioCtx.destination)" not in html_body
@@ -244,6 +254,7 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     assert "vram_used_mib" in telem_data
     assert "metrics_mode" in telem_data
     assert "device_index" in telem_data
+    assert telem_data["observers"] == 1
 
 
 def _extract_js_function(source: str, signature_prefix: str) -> str:
@@ -266,7 +277,7 @@ def _extract_js_function(source: str, signature_prefix: str) -> str:
 def test_frontend_js_syntax_and_unit_behaviors(tmp_path: Path) -> None:
     node_bin = shutil.which("node")
     if not node_bin:
-        return
+        pytest.skip("node binary required on PATH for frontend JS unit suite")
     js_file = REPO_ROOT / "js" / "log_blaster.js"
     proc = subprocess.run([node_bin, "--check", str(js_file)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
@@ -290,7 +301,11 @@ def test_frontend_js_syntax_and_unit_behaviors(tmp_path: Path) -> None:
     fn_rebuild = _extract_js_function(inline_src, "function rebuildLineView(")
     fn_format_time = _extract_js_function(inline_src, "function formatTime(")
     fn_append = _extract_js_function(inline_src, "function appendOrUpdateLine(")
+    fn_inject = _extract_js_function(inline_src, "function injectLocalLine(")
     fn_ingest = _extract_js_function(inline_src, "function ingestLogChunk(")
+    fn_resolve_title = _extract_js_function(inline_src, "function resolveNodeTitle(")
+    fn_record_seen = _extract_js_function(inline_src, "function recordSeenTimestamp(")
+    fn_dedupe = _extract_js_function(inline_src, "function dedupeBoundaryEntries(")
 
     harness = f"""
 const assert = require("assert");
@@ -316,6 +331,9 @@ const state = {{
   partialLineOpen: false,
   partialCrPending: false,
   partialRawText: "",
+  nodeTitleMap: new Map(),
+  lastLogIsoT: "",
+  seenAtLastIsoT: new Map(),
 }};
 function triggerShockwave() {{}}
 function feedSignalAnalyzer() {{}}
@@ -328,7 +346,11 @@ function feedSignalAnalyzer() {{}}
 {fn_rebuild}
 {fn_format_time}
 {fn_append}
+{fn_inject}
 {fn_ingest}
+{fn_resolve_title}
+{fn_record_seen}
+{fn_dedupe}
 
 function resetBuffer() {{
   state.lines = [];
@@ -336,11 +358,17 @@ function resetBuffer() {{
   state.partialLineOpen = false;
   state.partialCrPending = false;
   state.partialRawText = "";
+  state.lastLogIsoT = "";
+  state.seenAtLastIsoT.clear();
 }}
 
-// 1. Positive redaction vectors
+// 1. Positive redaction vectors (including short 5-char Bearer value & streaming partial prefixes)
 assert.strictEqual(
   redactSensitiveText("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+  "Authorization: Bearer ***REDACTED***"
+);
+assert.strictEqual(
+  redactSensitiveText("Authorization: Bearer super"),
   "Authorization: Bearer ***REDACTED***"
 );
 assert.strictEqual(
@@ -364,11 +392,24 @@ assert.strictEqual(
   "Loading ~\\\\Documents\\\\model.safetensors"
 );
 
-// 2. Negative redaction vectors
-const cleanLine = "[OldTimeRadio] Stage 1/4: 42.8 tok/s | LOG TOKEN SPECTRUM";
-assert.strictEqual(redactSensitiveText(cleanLine), cleanLine);
+// 2. Negative redaction vectors (benign ComfyUI log text & hf_hub identifiers stay unmasked)
+const cleanLine = "[OldTimeRadio] Stage 1/4: 42.8 tok/s | LOG TOKEN SPECTRUM | hf_hub ready";
+assert.strictEqual(redactSensitiveText(cleanLine, false), cleanLine);
 
-// 3. wrapSpansMonospace preserves colored spans & prevents 3-char orphan tails
+// 3. ANSI escape sequence embedded INSIDE a secret token cannot bypass redaction
+resetBuffer();
+ingestLogChunk("token=sk-proj-12345\\x1b[0m67890abcdef\\n");
+assert.strictEqual(state.lines.length, 1);
+assert.ok(!state.lines[0].viewRaw.includes("12345"), "Leaked viewRaw: " + state.lines[0].viewRaw);
+const spanJoined = state.lines[0].spans.map((s) => s.text).join("");
+assert.ok(!spanJoined.includes("12345"), "Leaked spans: " + spanJoined);
+
+// 4. Redact-before-truncate across MAX_LINE_CHARS boundary
+resetBuffer();
+ingestLogChunk("a".repeat(2042) + "sk-proj-1234567890abcdef\\n");
+assert.ok(!state.lines[0].viewRaw.includes("sk-proj-123"), "Leaked truncated token");
+
+// 5. wrapSpansMonospace preserves colored spans & prevents 3-char orphan tails
 const spans = [
   {{ text: "Prompt executed in ", color: "#4dffb5", hot: false }},
   {{ text: "00:04.68", color: "#ffe680", hot: true }},
@@ -380,45 +421,87 @@ const row2Text = rows[1].map((s) => s.text).join("");
 assert.ok(row2Text.length >= 8, "Expected non-orphan row 2, got: " + row2Text);
 assert.strictEqual(rows[0][1].color, "#ffe680");
 
-// 4. Stateful partial-line framing across split stdout.write chunks
+// 6. Stateful partial-line framing across split stdout.write chunks + Python print
 resetBuffer();
 ingestLogChunk("hel");
 ingestLogChunk("lo\\n");
-assert.deepStrictEqual(state.lines.map((l) => l.viewRaw), ["hello"]);
-
-// 5. Python print("x") two-write sequence ("x" followed by "\\n")
-resetBuffer();
-ingestLogChunk("first line");
+ingestLogChunk("line 2");
 ingestLogChunk("\\n");
-ingestLogChunk("second line");
-ingestLogChunk("\\n");
-assert.deepStrictEqual(state.lines.map((l) => l.viewRaw), ["first line", "second line"]);
+assert.deepStrictEqual(state.lines.map((l) => l.viewRaw), ["hello", "line 2"]);
 
-// 6. Split CRLF ("\\r" at end of chunk 1, "\\n" at start of chunk 2)
+// 7. Split CRLF ("\\r" at end of chunk 1, "\\n" at start of chunk 2)
 resetBuffer();
 ingestLogChunk("alpha\\r");
 ingestLogChunk("\\nbeta\\r\\n");
 assert.deepStrictEqual(state.lines.map((l) => l.viewRaw), ["alpha", "beta"]);
 
-// 7. tqdm carriage-return progress overwrites without clobbering prior closed line
+// 8. Interleaved synthetic HUD event lines MUST NOT corrupt open partial stdout or tqdm lines!
 resetBuffer();
-ingestLogChunk("[KokoroTTS] Starting synth\\n");
-ingestLogChunk("\\r 10%|#         | 1/10");
-ingestLogChunk("\\r 50%|#####     | 5/10");
-ingestLogChunk("\\r100%|##########| 10/10\\n[KokoroTTS] Done\\n");
+ingestLogChunk("hel");
+injectLocalLine("[ComfyUI] Executing KSampler (#5)");
+ingestLogChunk("lo\\n");
 assert.deepStrictEqual(state.lines.map((l) => l.viewRaw), [
-  "[KokoroTTS] Starting synth",
-  "100%|##########| 10/10",
-  "[KokoroTTS] Done",
+  "[ComfyUI] Executing KSampler (#5)",
+  "hello",
 ]);
 
-// 8. Secret token split across two stdout.write chunks is joined and redacted
+resetBuffer();
+ingestLogChunk("\\r 50%|#####     | 5/10");
+injectLocalLine("[WARNING] Workflow execution interrupted");
+ingestLogChunk("\\r 60%|######    | 6/10\\n");
+assert.deepStrictEqual(state.lines.map((l) => l.viewRaw), [
+  "[WARNING] Workflow execution interrupted",
+  " 60%|######    | 6/10",
+]);
+
+// 9. Secret token split across chunks is masked BOTH mid-stream AND when joined!
 resetBuffer();
 ingestLogChunk("Authorization: Bearer ");
-ingestLogChunk("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\\n");
+ingestLogChunk("sup");
+assert.strictEqual(state.lines[0].viewRaw, "Authorization: Bearer ***REDACTED***");
+ingestLogChunk("er_secret_jwt_999\\n");
 assert.deepStrictEqual(state.lines.map((l) => l.viewRaw), [
   "Authorization: Bearer ***REDACTED***",
 ]);
+
+resetBuffer();
+ingestLogChunk("api_token=sk-pr");
+assert.ok(!state.lines[0].viewRaw.endsWith("sk-pr"), "Expected partial prefix mask: " + state.lines[0].viewRaw);
+ingestLogChunk("oj-1234567890abcdef\\n");
+assert.ok(state.lines[0].viewRaw.includes("***REDACTED***"));
+
+// 10. Adversarial 1,000,000-character partial chunk strictly bounded before concatenation
+resetBuffer();
+ingestLogChunk("x");
+ingestLogChunk("a".repeat(1000000));
+assert.ok(
+  state.partialRawText.length <= MAX_LINE_CHARS + 128,
+  "partialRawText unbounded: " + state.partialRawText.length
+);
+assert.ok(state.lines[0].viewRaw.length <= MAX_LINE_CHARS + 20);
+
+// 11. Boundary-timestamp (t, m) multiset deduplication preserves same-timestamp subsequent "\\n"
+resetBuffer();
+const sameT = "2026-10-28T17:00:00.123456";
+recordSeenTimestamp(sameT, "hello");
+const drained = dedupeBoundaryEntries(
+  [
+    {{ t: sameT, m: "hello" }},
+    {{ t: sameT, m: "\\n" }},
+    {{ t: "2026-10-28T17:00:00.123999", m: "world\\n" }},
+  ],
+  state.lastLogIsoT,
+  state.seenAtLastIsoT
+);
+assert.deepStrictEqual(drained.map((e) => e.m), ["\\n", "world\\n"]);
+
+// 12. Subgraph execution ID ("12:5") resolves root subgraph container ("12"), never unrelated root #5
+state.nodeTitleMap.clear();
+state.nodeTitleMap.set("5", "Unrelated Root KSampler");
+state.nodeTitleMap.set("12", "Audio Mastering Subgraph");
+assert.strictEqual(resolveNodeTitle("5"), "Unrelated Root KSampler (#5)");
+assert.strictEqual(resolveNodeTitle("12:5"), "Audio Mastering Subgraph › #12:5");
+assert.strictEqual(resolveNodeTitle("99:4"), "Node #99:4");
 
 console.log("JS_UNIT_OK");
 """

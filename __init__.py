@@ -65,6 +65,20 @@ def _read_html_file() -> str:
         return fh.read()
 
 
+def _count_logblaster_observers(prompt_server: Any) -> int:
+    try:
+        sockets = getattr(prompt_server, "sockets", None)
+        if not isinstance(sockets, dict):
+            return 0
+        return sum(
+            1
+            for k in list(sockets.keys())
+            if isinstance(k, str) and k.startswith("logblaster-")
+        )
+    except Exception:
+        return 0
+
+
 def _install_observer_tap(prompt_server: Any) -> None:
     """Forward directed workflow execution events to connected logblaster-* observer sockets."""
     if getattr(prompt_server, "_logblaster_send_sync_wrapped", False):
@@ -75,19 +89,22 @@ def _install_observer_tap(prompt_server: Any) -> None:
 
     def _wrapped_send_sync(event: Any, data: Any, sid: Any = None) -> Any:
         result = orig_send_sync(event, data, sid)
-        if sid is not None and event in _OBSERVED_EXECUTION_EVENTS:
-            sockets = getattr(prompt_server, "sockets", None)
-            if isinstance(sockets, dict) and sockets:
-                for lb_sid in list(sockets.keys()):
-                    if (
-                        isinstance(lb_sid, str)
-                        and lb_sid.startswith("logblaster-")
-                        and lb_sid != sid
-                    ):
-                        try:
-                            orig_send_sync(event, data, lb_sid)
-                        except Exception:
-                            pass
+        try:
+            if sid is not None and event in _OBSERVED_EXECUTION_EVENTS:
+                sockets = getattr(prompt_server, "sockets", None)
+                if isinstance(sockets, dict) and sockets:
+                    for lb_sid in list(sockets.keys()):
+                        if (
+                            isinstance(lb_sid, str)
+                            and lb_sid.startswith("logblaster-")
+                            and lb_sid != sid
+                        ):
+                            try:
+                                orig_send_sync(event, data, lb_sid)
+                            except Exception:
+                                pass
+        except Exception:
+            pass
         return result
 
     setattr(prompt_server, "send_sync", _wrapped_send_sync)
@@ -126,6 +143,7 @@ def register_routes(prompt_server: Any) -> bool:
     @prompt_server.routes.get("/logblaster/telemetry")
     async def _serve_logblaster_telemetry(request: Any) -> Any:
         payload = await asyncio.to_thread(get_gpu_telemetry)
+        payload["observers"] = _count_logblaster_observers(prompt_server)
         return web.json_response(payload, headers=_SAFE_HEADERS)
 
     _install_observer_tap(prompt_server)

@@ -7,17 +7,15 @@ param(
 $ErrorActionPreference = "SilentlyContinue"
 $Url = "http://${HostName}:${Port}/logblaster"
 $PromptUrl = "http://${HostName}:${Port}/prompt"
+$TelemetryUrl = "http://${HostName}:${Port}/logblaster/telemetry"
 $Launcher = Join-Path (Split-Path -Parent $PSScriptRoot) "launch_log_blaster.bat"
 
-function Test-LogBlasterWindowOpen {
-    param([string]$TargetUrl)
-    $Procs = Get-CimInstance Win32_Process -Filter "Name='msedge.exe' OR Name='chrome.exe'"
-    foreach ($P in $Procs) {
-        if ($null -ne $P.CommandLine -and $P.CommandLine -like "*$TargetUrl*") {
-            return $true
-        }
+function Get-LogBlasterObserverCount {
+    $Telem = Invoke-RestMethod -Uri $TelemetryUrl -Method Get -TimeoutSec 2
+    if ($null -ne $Telem -and $null -ne $Telem.observers) {
+        return [int]($Telem.observers)
     }
-    return $false
+    return 0
 }
 
 Write-Host "[LogBlaster] Watching $PromptUrl for active ComfyUI runs (Ctrl+C to stop)..."
@@ -30,8 +28,8 @@ while ($true) {
         $WarnedUnreachable = $false
         $Remaining = [int]($Resp.exec_info.queue_remaining)
         if ($Remaining -gt 0 -and -not $WasRunning) {
-            if (-not (Test-LogBlasterWindowOpen -TargetUrl $Url)) {
-                Write-Host "[LogBlaster] Active workflow detected (queue_remaining=$Remaining)! Launching GPU Shader HUD -> $Url"
+            if ((Get-LogBlasterObserverCount) -eq 0) {
+                Write-Host "[LogBlaster] Active workflow detected (queue_remaining=$Remaining, observers=0)! Launching GPU Shader HUD -> $Url"
                 Start-Process -FilePath $Launcher -ArgumentList "$Port", "$HostName"
             }
             $WasRunning = $true
