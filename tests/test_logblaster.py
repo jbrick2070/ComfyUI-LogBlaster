@@ -388,6 +388,14 @@ assert.strictEqual(
   "GET https://api.example.test/v1?api_key=***REDACTED***&mode=fast"
 );
 assert.strictEqual(
+  redactSensitiveText("Retrying https://admin:secretPass99@192.168.1.42:8188/api"),
+  "Retrying https://admin:***REDACTED***@192.168.1.42:8188/api"
+);
+assert.strictEqual(
+  redactSensitiveText("Retrying https://admin:secr", true),
+  "Retrying https://admin:***REDACTED***"
+);
+assert.strictEqual(
   redactSensitiveText("Loading C:\\\\Users\\\\jeffr\\\\Documents\\\\model.safetensors"),
   "Loading ~\\\\Documents\\\\model.safetensors"
 );

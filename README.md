@@ -2,7 +2,20 @@
 
 Real-time **Audio-Reactive WebGL2 GPU Shader Log-Text Visualizer** for ComfyUI — featuring **giant live foreground streaming typography that smoothly shrinks into a receding 3D trail as logs scroll**.
 
+![ComfyUI-LogBlaster Live Demo Preview](docs/demo/logblaster_preview.gif)
+
+- **Full 1080p30 + Stereo Audio Demo Video (48s — Installation, ComfyUI User UI, `LogBlaster Stage Cue`, Shaders & `COMFY B&Y`):** [`docs/demo/comfyui_logblaster_demo.mp4`](docs/demo/comfyui_logblaster_demo.mp4)
+
 Instead of a flat wall of uniform tiny HTML text, `ComfyUI-LogBlaster` renders ComfyUI's live blasting `stdout`/`stderr` stream (`/internal/logs/subscribe` + `/ws`) onto an offscreen transparent-alpha glyph canvas and processes **the log characters themselves** through a 2-pass WebGL2 ping-pong fragment shader pipeline.
+
+## Installation (30 Seconds — Zero `pip` Dependencies)
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/jbrick2070/ComfyUI-LogBlaster.git
+```
+
+Restart ComfyUI — no Python packages to install and **0 MB extra PyTorch VRAM** (`ctypes` NVML). LogBlaster automatically registers `GET /logblaster`, mounts **`LOG BLASTER | AUTO: ON`** in ComfyUI's top bar, and pops open on workflow runs.
 
 ## Giant Foreground Live Text -> Shrinking Trail (`VIEW` Modes, Hotkey `V`)
 
@@ -36,7 +49,7 @@ Instead of a flat wall of uniform tiny HTML text, `ComfyUI-LogBlaster` renders C
 
 ## Streamer Privacy Redaction, Live Filter & Error Jump
 
-- **`REDACT: ON` (default)**: Automatically masks secret tokens (`sk-`, `gh*_`, `hf_`, `AIza`, `AKIA`, `Authorization: Bearer ...`, `api_key`/`token`/`secret`/`password`) and collapses local home paths (`C:\Users\<name>\` -> `~\`) on screen and when copying logs (`COPY`).
+- **`REDACT: ON` (default)**: Automatically masks secret tokens (`sk-`, `gh*_`, `hf_`, `AIza`, `AKIA`, `Authorization: Bearer ...`, `api_key`/`token`/`secret`/`password`), URL basic-auth credentials (`https://user:pass@host` -> `https://user:***REDACTED***@host`), and collapses local home paths (`C:\Users\<name>\` -> `~\`) on screen and when copying logs (`COPY`).
 - **`/` Live Filter**: Filter the 3,500-line scrollback buffer in real time inside the GPU shader.
 - **`E` Error Jump (`ERR: N`)**: Instantly pause follow and spotlight any error line directly in the giant foreground Hero stage.
 
