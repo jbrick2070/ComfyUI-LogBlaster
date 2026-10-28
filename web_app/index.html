@@ -3,14 +3,16 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ComfyUI // LOG BLASTER — GPU Shader Terminal</title>
+<title>ComfyUI // LOG BLASTER — Audio-Reactive GPU Shader Terminal</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2306101a'/%3E%3Cpath d='M6 18h5l3-9 4 14 3-7h5' stroke='%234df3ff' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
 <style>
   :root {
-    --hud-bg: rgba(8, 12, 18, 0.82);
-    --hud-border: rgba(92, 225, 230, 0.32);
+    --hud-bg: rgba(8, 12, 18, 0.84);
+    --hud-border: rgba(92, 225, 230, 0.34);
     --hud-accent: #4df3ff;
     --hud-hot: #ff3e7f;
     --hud-ok: #38ffb3;
+    --hud-audio: #ffc845;
     --hud-text: #d9f4ff;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -45,7 +47,7 @@
     border: 1px solid var(--hud-border);
     backdrop-filter: blur(8px);
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
-    opacity: 0.42;
+    opacity: 0.44;
     transition: opacity 0.2s ease, border-color 0.2s ease;
     font-size: 11px;
   }
@@ -88,6 +90,12 @@
     color: #ffffff;
     box-shadow: 0 0 10px rgba(77, 243, 255, 0.38);
   }
+  button.hud-btn.audio-active {
+    background: rgba(56, 255, 179, 0.22);
+    border-color: var(--hud-ok);
+    color: #e6fff5;
+    box-shadow: 0 0 10px rgba(56, 255, 179, 0.38);
+  }
   button.hud-btn.blast-btn {
     background: rgba(255, 62, 127, 0.2);
     border-color: rgba(255, 62, 127, 0.6);
@@ -106,7 +114,7 @@
     margin-right: 2px;
   }
   input[type="range"].fx-slider {
-    width: 72px;
+    width: 66px;
     accent-color: var(--hud-accent);
     cursor: pointer;
   }
@@ -116,7 +124,7 @@
     left: 50%;
     transform: translateX(-50%);
     z-index: 30;
-    background: rgba(10, 18, 26, 0.92);
+    background: rgba(10, 18, 26, 0.94);
     border: 1px solid var(--hud-accent);
     color: #e9fbff;
     padding: 6px 14px;
@@ -126,7 +134,7 @@
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.22s ease;
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
   }
   #toastMsg.visible { opacity: 1; }
 </style>
@@ -135,12 +143,16 @@
 <canvas id="glCanvas"></canvas>
 <div id="toastMsg"></div>
 
-<div id="controlDock" aria-label="LogBlaster Shader Controls">
+<div id="controlDock" aria-label="LogBlaster Shader and Audio Controls">
   <div class="dock-group">
     <button class="hud-btn is-active" data-preset="0" title="Hotkey: 1">1 CRT</button>
     <button class="hud-btn" data-preset="1" title="Hotkey: 2">2 CYBER</button>
     <button class="hud-btn" data-preset="2" title="Hotkey: 3">3 RADIO SCOPE</button>
     <button class="hud-btn" data-preset="3" title="Hotkey: 4">4 ARCADE</button>
+  </div>
+  <div class="dock-group">
+    <button class="hud-btn" id="btnSynth" title="Procedural Log-Reactive Telemetry Synth + Audio FFT (Hotkey: M)">SYNTH: OFF</button>
+    <button class="hud-btn" id="btnAudioIn" title="Click: Capture System/Tab Audio | Shift+Click: Mic Input | Drop audio file anywhere (Hotkey: A)">AUDIO IN: OFF</button>
   </div>
   <div class="dock-group">
     <button class="hud-btn" id="btnTint" title="Cycle Phosphor Palette (Hotkey: T)">TINT: AUTO</button>
@@ -153,7 +165,7 @@
     <button class="hud-btn" id="btnPause" title="Pause / Resume Auto-Scroll (Hotkey: Space)">LIVE</button>
   </div>
   <div class="dock-group">
-    <button class="hud-btn blast-btn" id="btnTestBlast" title="Fire a synthetic ComfyUI log storm to test GPU shaders (Hotkey: B)">TEST BLAST</button>
+    <button class="hud-btn blast-btn" id="btnTestBlast" title="Fire a synthetic ComfyUI log storm to test GPU shaders & audio (Hotkey: B)">TEST BLAST</button>
     <button class="hud-btn" id="btnCopy" title="Copy plain-text logs to clipboard">COPY</button>
     <button class="hud-btn" id="btnFullscreen" title="Toggle Fullscreen (Hotkey: F)">FULL</button>
   </div>
@@ -164,11 +176,12 @@
   "use strict";
 
   // =========================================================================
-  // 1. STATE, RING BUFFER & TELEMETRY
+  // 1. STATE, RING BUFFER, AUDIO-REACTIVE FFT & TELEMETRY
   // =========================================================================
   const MAX_LINES = 3500;
   const SPECTRUM_BINS = 48;
   const WAVE_SAMPLES = 160;
+  const AUDIO_TEX_WIDTH = 256; // 256x2 R8 texture: row 0 = waveform, row 1 = FFT
 
   const PRESET_NAMES = [
     "RETRO CRT PHOSPHOR",
@@ -192,7 +205,7 @@
     // Live ComfyUI connection + execution state
     wsConnected: false,
     clientId: "logblaster-" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)),
-    runState: "IDLE", // IDLE | BLASTING | COMPLETE | ERROR
+    runState: "IDLE",
     runStartMs: 0,
     lastElapsedSec: 0,
     activeNodeId: null,
@@ -203,34 +216,44 @@
     stepRateSmooth: 0,
     lastStepMs: 0,
 
-    // Log stream ring buffer & CR line tracker
+    // Log stream ring buffer
     lines: [],
     lineCounter: 0,
     partialCrActive: false,
-    ansiState: { fg: null, bold: false },
 
     // Kinetic & GPU reactive uniforms
     charsThisSec: 0,
     linesThisSec: 0,
     cpsDisplay: 0,
     lpsDisplay: 0,
-    blastRate: 0.0,       // smoothed 0..1.5 log velocity
-    stepPulse: 0.0,       // decays from 1->0 on sampler step
-    nodePulse: 0.0,       // decays from 1->0 on node switch
-    glitchBurst: 0.0,     // decays from 1->0 on error/glitch cue
-    flashPulse: 0.0,      // decays from 1->0 on start/complete
-    degaussWobble: 0.0,   // decays from 1->0 on workflow start
-    shockwaveTime: -10.0, // time when radial shockwave launched
+    blastRate: 0.0,
+    stepPulse: 0.0,
+    nodePulse: 0.0,
+    glitchBurst: 0.0,
+    flashPulse: 0.0,
+    degaussWobble: 0.0,
+    shockwaveTime: -10.0,
     shockwaveCenter: [0.5, 0.5],
     smoothScrollPx: 0.0,
 
-    // Real-time character spectrum & waveform
+    // Audio-reactive state (Web Audio API AnalyserNode + Procedural Synth)
+    synthEnabled: false,
+    audioInMode: "OFF", // OFF | SYSTEM | MIC | FILE
+    audioActive: false,
+    audioBass: 0.0,     // 20-160 Hz smoothed 0..1.5
+    audioMid: 0.0,      // 160-2400 Hz smoothed 0..1.5
+    audioHigh: 0.0,     // 2.4-12 kHz smoothed 0..1.5
+    bassAvg: 0.12,
+    lastBeatMs: 0,
+    audioTexBytes: new Uint8Array(AUDIO_TEX_WIDTH * 2),
+
+    // Real-time character/audio spectrum & waveform for 2D HUD deck
     spectrum: new Float32Array(SPECTRUM_BINS),
     spectrumPeak: new Float32Array(SPECTRUM_BINS),
     waveform: new Float32Array(WAVE_SAMPLES),
     waveWriteIdx: 0,
 
-    // Hardware telemetry (5080 + Shader Renderer GPU)
+    // Hardware telemetry
     gpuTelemetry: {
       available: false,
       gpu_name: "Detecting GPU...",
@@ -244,8 +267,304 @@
     fps: 60,
   };
 
+  // Initialize neutral centerline waveform (128 = 0.0 in unsigned byte)
+  state.audioTexBytes.fill(128, 0, AUDIO_TEX_WIDTH);
+
   // =========================================================================
-  // 2. TOAST & UI CONTROLS
+  // 2. ZERO-OVERHEAD WEB AUDIO FFT + PROCEDURAL LOG-REACTIVE SYNTH ENGINE
+  // =========================================================================
+  let audioCtx = null;
+  let analyser = null;
+  let synthMasterGain = null;
+  let droneOsc = null;
+  let droneGain = null;
+  let externalStream = null;
+  let externalSourceNode = null;
+  let fileAudioEl = null;
+  let fileMediaNode = null;
+  let fftBuf = null;
+  let timeBuf = null;
+  let lastTickSoundMs = 0;
+
+  function ensureAudioGraph() {
+    if (audioCtx) {
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      return;
+    }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+
+    audioCtx = new Ctx();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512; // 256 frequency bins — native SIMD C++, ~0.04% CPU
+    analyser.smoothingTimeConstant = 0.74;
+    fftBuf = new Uint8Array(analyser.frequencyBinCount);
+    timeBuf = new Uint8Array(analyser.frequencyBinCount);
+
+    synthMasterGain = audioCtx.createGain();
+    synthMasterGain.gain.value = 0.24;
+    synthMasterGain.connect(analyser);
+    analyser.connect(audioCtx.destination);
+
+    // Subtle warm analog carrier hum that swells gently during active blasts
+    droneOsc = audioCtx.createOscillator();
+    droneOsc.type = "triangle";
+    droneOsc.frequency.value = 58.0;
+    const droneFilter = audioCtx.createBiquadFilter();
+    droneFilter.type = "lowpass";
+    droneFilter.frequency.value = 150.0;
+    droneGain = audioCtx.createGain();
+    droneGain.gain.value = 0.0;
+    droneOsc.connect(droneFilter);
+    droneFilter.connect(droneGain);
+    droneGain.connect(synthMasterGain);
+    droneOsc.start();
+  }
+
+  function playSynthTick(kind, energy) {
+    if (!state.synthEnabled || !audioCtx || !synthMasterGain) return;
+    const nowMs = performance.now();
+    // Rate-limit rapid log bursts to ~30 ticks/sec for smooth sci-fi mainframe chatter
+    if (kind === "normal" && nowMs - lastTickSoundMs < 34) return;
+    lastTickSoundMs = nowMs;
+
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    if (kind === "error") {
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(210, t);
+      osc.frequency.linearRampToValueAtTime(115, t + 0.22);
+      gain.gain.setValueAtTime(0.32, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(gain);
+      gain.connect(synthMasterGain);
+      osc.start(t);
+      osc.stop(t + 0.25);
+    } else if (kind === "complete") {
+      // Warm retro-broadcast completion triad arpeggio
+      const notes = [261.63, 392.0, 587.33, 659.25];
+      notes.forEach((freq, idx) => {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = "sine";
+        const st = t + idx * 0.055;
+        o.frequency.setValueAtTime(freq, st);
+        g.gain.setValueAtTime(0.18, st);
+        g.gain.exponentialRampToValueAtTime(0.001, st + 0.36);
+        o.connect(g);
+        g.connect(synthMasterGain);
+        o.start(st);
+        o.stop(st + 0.38);
+      });
+    } else if (kind === "shock") {
+      // Deep cathode/sonar thump on node switch or shockwave
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(125, t);
+      osc.frequency.exponentialRampToValueAtTime(36, t + 0.24);
+      gain.gain.setValueAtTime(0.38, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+      osc.connect(gain);
+      gain.connect(synthMasterGain);
+      osc.start(t);
+      osc.stop(t + 0.27);
+    } else if (kind === "progress") {
+      const pct = state.stepMax > 0 ? state.stepVal / state.stepMax : 0.5;
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(160 + pct * 260, t);
+      osc.frequency.exponentialRampToValueAtTime(95 + pct * 140, t + 0.065);
+      gain.gain.setValueAtTime(0.16, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+      osc.connect(gain);
+      gain.connect(synthMasterGain);
+      osc.start(t);
+      osc.stop(t + 0.075);
+    } else {
+      // Crisp soft CRT telemetry data tick
+      osc.type = "sine";
+      const pitch = 520 + ((state.lineCounter * 73) % 440) + energy * 180;
+      osc.frequency.setValueAtTime(pitch, t);
+      osc.frequency.exponentialRampToValueAtTime(pitch * 0.55, t + 0.024);
+      gain.gain.setValueAtTime(0.065, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.028);
+      osc.connect(gain);
+      gain.connect(synthMasterGain);
+      osc.start(t);
+      osc.stop(t + 0.03);
+    }
+  }
+
+  function disconnectExternalAudio() {
+    if (externalSourceNode) {
+      try { externalSourceNode.disconnect(); } catch (_) {}
+      externalSourceNode = null;
+    }
+    if (externalStream) {
+      externalStream.getTracks().forEach((tr) => tr.stop());
+      externalStream = null;
+    }
+    if (fileAudioEl) {
+      fileAudioEl.pause();
+    }
+    state.audioInMode = "OFF";
+  }
+
+  async function toggleExternalAudio(useMic = false) {
+    if (state.audioInMode !== "OFF") {
+      disconnectExternalAudio();
+      state.audioActive = state.synthEnabled;
+      syncControlsUI();
+      showToast("EXTERNAL AUDIO INPUT DISCONNECTED");
+      return;
+    }
+
+    ensureAudioGraph();
+    if (!audioCtx || !analyser) {
+      showToast("WEB AUDIO UNAVAILABLE");
+      return;
+    }
+
+    try {
+      let stream = null;
+      if (useMic) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          video: false,
+        });
+        state.audioInMode = "MIC";
+      } else {
+        // System / Tab loopback audio capture (Windows Edge/Chrome supports "Share system audio")
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        });
+        // Immediately stop the video track so zero GPU/CPU is spent capturing screen pixels!
+        stream.getVideoTracks().forEach((vt) => vt.stop());
+        if (stream.getAudioTracks().length === 0) {
+          showToast("TIP: Tick 'Also share system audio' in the picker (or Shift+Click for Mic)");
+          return;
+        }
+        state.audioInMode = "SYS";
+      }
+
+      externalStream = stream;
+      externalSourceNode = audioCtx.createMediaStreamSource(stream);
+      // Connect external capture ONLY to analyser (not destination) so it never double-echoes!
+      externalSourceNode.connect(analyser);
+      stream.getAudioTracks()[0].addEventListener("ended", () => {
+        disconnectExternalAudio();
+        state.audioActive = state.synthEnabled;
+        syncControlsUI();
+      });
+
+      state.audioActive = true;
+      syncControlsUI();
+      showToast(`AUDIO REACTIVE LIVE (${state.audioInMode} FFT)`);
+    } catch (_) {
+      showToast("AUDIO CAPTURE CANCELLED (Shift+Click AUDIO IN for Mic, or use SYNTH)");
+    }
+  }
+
+  // Drag & drop any .wav / .mp3 / .mp4 file onto the HUD to play & visualize it!
+  window.addEventListener("dragover", (ev) => ev.preventDefault());
+  window.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    const file = ev.dataTransfer?.files?.[0];
+    if (!file) return;
+    ensureAudioGraph();
+    disconnectExternalAudio();
+    if (!fileAudioEl) {
+      fileAudioEl = new Audio();
+      fileAudioEl.crossOrigin = "anonymous";
+    }
+    fileAudioEl.src = URL.createObjectURL(file);
+    fileAudioEl.loop = false;
+    if (!fileMediaNode && audioCtx) {
+      fileMediaNode = audioCtx.createMediaElementSource(fileAudioEl);
+      fileMediaNode.connect(analyser);
+    }
+    fileAudioEl.play();
+    state.audioInMode = "FILE";
+    state.audioActive = true;
+    syncControlsUI();
+    ingestLogChunk(`[LogBlaster:SHOCKWAVE] >>> AUDIO-REACTIVE PLAYBACK: ${file.name} <<<\n`);
+    showToast(`PLAYING & VISUALIZING: ${file.name}`);
+  });
+
+  function updateAudioAnalysis(nowMs, dtSec) {
+    state.audioActive = state.synthEnabled || state.audioInMode !== "OFF";
+
+    if (state.synthEnabled && droneGain && audioCtx) {
+      const targetDrone = Math.min(0.18, state.blastRate * 0.11 + (state.runState === "BLASTING" ? 0.045 : 0.0));
+      droneGain.gain.setTargetAtTime(targetDrone, audioCtx.currentTime, 0.08);
+      if (droneOsc) {
+        droneOsc.frequency.setTargetAtTime(55 + state.blastRate * 28, audioCtx.currentTime, 0.1);
+      }
+    } else if (droneGain && audioCtx) {
+      droneGain.gain.setTargetAtTime(0.0, audioCtx.currentTime, 0.05);
+    }
+
+    if (!state.audioActive || !analyser || !fftBuf || !timeBuf) {
+      // Smoothly decay audio uniforms and synthesize procedural log-driven scope texture
+      state.audioBass = Math.max(0.0, state.audioBass - dtSec * 2.5);
+      state.audioMid = Math.max(0.0, state.audioMid - dtSec * 2.5);
+      state.audioHigh = Math.max(0.0, state.audioHigh - dtSec * 2.5);
+      for (let i = 0; i < AUDIO_TEX_WIDTH; i++) {
+        const wIdx = (state.waveWriteIdx + Math.floor((i / AUDIO_TEX_WIDTH) * WAVE_SAMPLES)) % WAVE_SAMPLES;
+        const synthWave = state.waveform[wIdx] * 0.55 + Math.sin(i * 0.11 - nowMs * 0.007) * (0.06 + state.blastRate * 0.18);
+        state.audioTexBytes[i] = Math.max(0, Math.min(255, Math.round(128 + synthWave * 115)));
+        const sBin = Math.min(SPECTRUM_BINS - 1, Math.floor((i / AUDIO_TEX_WIDTH) * SPECTRUM_BINS));
+        state.audioTexBytes[AUDIO_TEX_WIDTH + i] = Math.max(0, Math.min(255, Math.round(state.spectrum[sBin] * 210)));
+      }
+      return;
+    }
+
+    analyser.getByteFrequencyData(fftBuf);
+    analyser.getByteTimeDomainData(timeBuf);
+
+    // Copy directly into 256x2 GPU audio texture buffer
+    for (let i = 0; i < AUDIO_TEX_WIDTH; i++) {
+      state.audioTexBytes[i] = timeBuf[i];
+      state.audioTexBytes[AUDIO_TEX_WIDTH + i] = fftBuf[i];
+    }
+
+    // Compute Bass (bins 1..8 ~ 40-350Hz), Mid (bins 9..48 ~ 380-2.1kHz), High (bins 49..140 ~ 2.2-6.5kHz)
+    let bSum = 0, mSum = 0, hSum = 0;
+    for (let i = 1; i <= 8; i++) bSum += fftBuf[i];
+    for (let i = 9; i <= 48; i++) mSum += fftBuf[i];
+    for (let i = 49; i <= 140; i++) hSum += fftBuf[i];
+
+    const instBass = (bSum / (8 * 255)) * 1.45;
+    const instMid = (mSum / (40 * 255)) * 1.55;
+    const instHigh = (hSum / (92 * 255)) * 1.75;
+
+    state.audioBass = state.audioBass * 0.55 + instBass * 0.45;
+    state.audioMid = state.audioMid * 0.55 + instMid * 0.45;
+    state.audioHigh = state.audioHigh * 0.50 + instHigh * 0.50;
+
+    // Real-time beat-drop detector -> fires radial GPU shockwave through the log text!
+    state.bassAvg = state.bassAvg * 0.94 + instBass * 0.06;
+    if (instBass > 0.36 && instBass > state.bassAvg * 1.42 && (nowMs - state.lastBeatMs) > 240) {
+      state.lastBeatMs = nowMs;
+      triggerShockwave(0.3 + Math.random() * 0.4, 0.35 + Math.random() * 0.3);
+    }
+
+    // Drive the 48-band HUD spectrum & waveform directly from live audio FFT + log energy!
+    for (let b = 0; b < SPECTRUM_BINS; b++) {
+      const fftIdx = Math.min(200, Math.floor(Math.pow(b / SPECTRUM_BINS, 1.45) * 180) + 1);
+      const fftNorm = (fftBuf[fftIdx] / 255) * 1.22;
+      state.spectrum[b] = Math.max(state.spectrum[b], fftNorm);
+    }
+    for (let s = 0; s < WAVE_SAMPLES; s++) {
+      const tIdx = Math.floor((s / WAVE_SAMPLES) * AUDIO_TEX_WIDTH);
+      state.waveform[s] = (timeBuf[tIdx] - 128) / 128.0;
+    }
+    state.waveWriteIdx = 0;
+  }
+
+  // =========================================================================
+  // 3. TOAST & UI CONTROLS
   // =========================================================================
   const toastEl = document.getElementById("toastMsg");
   let toastTimer = null;
@@ -253,10 +572,12 @@
     toastEl.textContent = msg;
     toastEl.classList.add("visible");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 1600);
+    toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 1800);
   }
 
   const presetBtns = Array.from(document.querySelectorAll("[data-preset]"));
+  const btnSynth = document.getElementById("btnSynth");
+  const btnAudioIn = document.getElementById("btnAudioIn");
   const btnTint = document.getElementById("btnTint");
   const fxSlider = document.getElementById("fxSlider");
   const btnPause = document.getElementById("btnPause");
@@ -265,6 +586,12 @@
     presetBtns.forEach((b) => {
       b.classList.toggle("is-active", Number(b.dataset.preset) === state.preset);
     });
+    btnSynth.textContent = state.synthEnabled ? "SYNTH: ON" : "SYNTH: OFF";
+    btnSynth.classList.toggle("audio-active", state.synthEnabled);
+
+    btnAudioIn.textContent = `AUDIO IN: ${state.audioInMode}`;
+    btnAudioIn.classList.toggle("audio-active", state.audioInMode !== "OFF");
+
     btnTint.textContent = "TINT: " + TINT_NAMES[state.tintMode];
     fxSlider.value = String(Math.round(state.fxIntensity * 100));
     btnPause.textContent = state.paused
@@ -283,6 +610,23 @@
 
   presetBtns.forEach((b) => {
     b.addEventListener("click", () => setPreset(Number(b.dataset.preset)));
+  });
+
+  btnSynth.addEventListener("click", () => {
+    ensureAudioGraph();
+    state.synthEnabled = !state.synthEnabled;
+    state.audioActive = state.synthEnabled || state.audioInMode !== "OFF";
+    syncControlsUI();
+    if (state.synthEnabled) {
+      playSynthTick("shock", 0.8);
+      showToast("LOG-REACTIVE TELEMETRY SYNTH + FFT ENABLED");
+    } else {
+      showToast("TELEMETRY SYNTH MUTED");
+    }
+  });
+
+  btnAudioIn.addEventListener("click", (ev) => {
+    toggleExternalAudio(Boolean(ev.shiftKey));
   });
 
   btnTint.addEventListener("click", () => {
@@ -354,6 +698,8 @@
     else if (ev.key === "2") setPreset(1);
     else if (ev.key === "3") setPreset(2);
     else if (ev.key === "4") setPreset(3);
+    else if (ev.key === "m" || ev.key === "M") btnSynth.click();
+    else if (ev.key === "a" || ev.key === "A") toggleExternalAudio(Boolean(ev.shiftKey));
     else if (ev.key === "t" || ev.key === "T") btnTint.click();
     else if (ev.key === " ") { ev.preventDefault(); btnPause.click(); }
     else if (ev.key === "-" || ev.key === "_") document.getElementById("btnFontDown").click();
@@ -365,7 +711,7 @@
   syncControlsUI();
 
   // =========================================================================
-  // 3. ANSI + SEMANTIC LOG PARSER & SIGNAL ANALYZER
+  // 4. ANSI + SEMANTIC LOG PARSER & SIGNAL ANALYZER
   // =========================================================================
   const ANSI_16 = {
     30: "#586e75", 31: "#ff4d6d", 32: "#38ffb3", 33: "#ffc845",
@@ -379,11 +725,12 @@
     state.shockwaveCenter = [cx, cy];
   }
 
-  function feedSignalAnalyzer(text, energyBoost) {
+  function feedSignalAnalyzer(text, energyBoost, kind) {
     const len = text.length;
     if (!len) return;
     state.charsThisSec += len;
     state.blastRate = Math.min(1.6, state.blastRate + Math.min(0.45, len * 0.0022) + energyBoost * 0.18);
+    playSynthTick(kind, energyBoost);
 
     let waveAcc = 0;
     const stride = Math.max(1, Math.floor(len / 48));
@@ -391,32 +738,28 @@
       const code = text.charCodeAt(i);
       let bin = 0;
       if (code >= 48 && code <= 57) {
-        // Digits -> mid-high telemetry bins (24..33)
         bin = 24 + (code - 48);
       } else if (code >= 65 && code <= 90) {
-        // Uppercase identifiers -> low-mid carrier bins (2..14)
         bin = 2 + ((code - 65) % 13);
       } else if (code >= 97 && code <= 122) {
-        // Lowercase prose -> mid bins (15..23)
         bin = 15 + ((code - 97) % 9);
       } else if (code > 127) {
-        // Unicode block bars (tqdm ████) -> hot upper bins (40..47)
         bin = 40 + (code % 8);
       } else {
-        // Brackets, slashes, operators -> high bins (34..39)
         bin = 34 + (code % 6);
       }
       state.spectrum[bin] = Math.min(1.35, state.spectrum[bin] + 0.16 + energyBoost * 0.14);
       waveAcc += ((code & 31) - 15.5) / 15.5;
     }
-    // Bass bins respond to line impacts
     state.spectrum[0] = Math.min(1.35, state.spectrum[0] + 0.25 + energyBoost * 0.3);
     state.spectrum[1] = Math.min(1.35, state.spectrum[1] + 0.20 + energyBoost * 0.25);
 
-    const sampleCount = Math.ceil(len / stride);
-    const normWave = Math.max(-1, Math.min(1, (waveAcc / Math.max(1, sampleCount)) * (0.65 + state.blastRate * 0.6)));
-    state.waveform[state.waveWriteIdx] = normWave;
-    state.waveWriteIdx = (state.waveWriteIdx + 1) % WAVE_SAMPLES;
+    if (!state.audioActive) {
+      const sampleCount = Math.ceil(len / stride);
+      const normWave = Math.max(-1, Math.min(1, (waveAcc / Math.max(1, sampleCount)) * (0.65 + state.blastRate * 0.6)));
+      state.waveform[state.waveWriteIdx] = normWave;
+      state.waveWriteIdx = (state.waveWriteIdx + 1) % WAVE_SAMPLES;
+    }
   }
 
   function classifySemanticLine(plain) {
@@ -456,7 +799,6 @@
   }
 
   function tokenizeSpans(rawSegment, baseColor) {
-    // Parse ANSI SGR sequences first; then highlight tokens in uncolored chunks
     const spans = [];
     const ansiRegex = /\x1b\[([0-9;]*)m/g;
     let lastIdx = 0;
@@ -470,7 +812,6 @@
         spans.push({ text: chunk, color: explicitColor, hot: bold });
         return;
       }
-      // Tokenize tags, percentages/bars, numbers+units for bright phosphor bloom
       const tokRe = /(\[[^\]]{2,28}\]|\d+%\|[^|]+\||(?:\b\d+(?:\.\d+)?(?:it\/s|s\/it|tok\/s|MiB|GiB|MB|GB|ms|s|%)\b))/g;
       let tLast = 0;
       let tm;
@@ -533,7 +874,7 @@
     return `${hh}:${mm}:${ss}`;
   }
 
-  function appendOrUpdateLine(rawLine, isoTime, replaceLast) {
+  function appendOrUpdateLine(rawLine, isoTime, replaceLast, silentBackfill = false) {
     const expanded = rawLine.replace(/\t/g, "  ");
     const plain = expanded.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
     if (!plain.trim() && replaceLast) return;
@@ -543,7 +884,7 @@
     const now = performance.now();
     const entry = {
       id: ++state.lineCounter,
-      ts: now,
+      ts: silentBackfill ? now - 2000 : now,
       timeStr: formatTime(isoTime),
       raw: plain,
       spans,
@@ -552,23 +893,25 @@
     };
 
     if (replaceLast && state.lines.length > 0) {
-      // Preserve gentle pulse without full white flash on rapid tqdm ticks
       entry.ts = now - 110;
       state.lines[state.lines.length - 1] = entry;
     } else {
       state.lines.push(entry);
-      state.linesThisSec++;
-      state.smoothScrollPx += state.fontSize * 1.38;
+      if (!silentBackfill) {
+        state.linesThisSec++;
+        state.smoothScrollPx += state.fontSize * 1.38;
+      }
       if (state.lines.length > MAX_LINES) {
         state.lines.splice(0, state.lines.length - MAX_LINES);
       }
     }
-    feedSignalAnalyzer(plain, sem.energy);
+    if (!silentBackfill) {
+      feedSignalAnalyzer(plain, sem.energy, sem.kind);
+    }
   }
 
-  function ingestLogChunk(text, isoTime) {
+  function ingestLogChunk(text, isoTime, silentBackfill = false) {
     if (typeof text !== "string" || !text.length) return;
-    // Normalize CRLF -> LF, then handle standalone CR overwrites accurately
     const norm = text.replace(/\r\n/g, "\n");
     const newlineParts = norm.split("\n");
 
@@ -590,11 +933,11 @@
           }
           if (!seg) continue;
           const shouldReplace = state.partialCrActive || c > 0;
-          appendOrUpdateLine(seg, isoTime, shouldReplace);
+          appendOrUpdateLine(seg, isoTime, shouldReplace, silentBackfill);
           state.partialCrActive = true;
         }
       } else {
-        appendOrUpdateLine(part, isoTime, state.partialCrActive);
+        appendOrUpdateLine(part, isoTime, state.partialCrActive, silentBackfill);
         state.partialCrActive = false;
       }
 
@@ -605,7 +948,7 @@
   }
 
   // =========================================================================
-  // 4. COMFYUI LIVE WEBSOCKET + LOG SUBSCRIPTION + BROADCAST CHANNEL
+  // 5. COMFYUI LIVE WEBSOCKET + LOG SUBSCRIPTION + BROADCAST CHANNEL
   // =========================================================================
   let ws = null;
   let reconnectTimer = null;
@@ -618,17 +961,14 @@
         if (Array.isArray(data?.entries) && state.lines.length <= 4) {
           for (const item of data.entries) {
             if (item && typeof item.m === "string") {
-              ingestLogChunk(item.m, item.t);
+              ingestLogChunk(item.m, item.t, true);
             }
           }
-          // Cool down historical backfill timestamps so initial screen doesn't flash all-white
-          const coolTs = performance.now() - 2000;
-          for (const l of state.lines) l.ts = coolTs;
           state.smoothScrollPx = 0;
           state.blastRate = 0.15;
         }
       }
-    } catch (_) { /* server might still be warming up */ }
+    } catch (_) {}
 
     try {
       await fetch("/internal/logs/subscribe", {
@@ -636,7 +976,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clientId: state.clientId, enabled: true }),
       });
-    } catch (_) { /* ignore */ }
+    } catch (_) {}
   }
 
   function connectComfySocket() {
@@ -658,7 +998,7 @@
     });
 
     ws.addEventListener("message", (ev) => {
-      if (typeof ev.data !== "string") return; // skip binary preview blobs
+      if (typeof ev.data !== "string") return;
       let msg;
       try {
         msg = JSON.parse(ev.data);
@@ -690,6 +1030,7 @@
             state.activeNodeTitle = "Workflow Complete";
             state.flashPulse = 1.0;
             triggerShockwave(0.5, 0.5);
+            playSynthTick("complete", 1.0);
           }
         } else {
           state.runState = "BLASTING";
@@ -701,6 +1042,7 @@
           state.stepVal = 0;
           state.stepMax = 0;
           triggerShockwave(0.2 + Math.random() * 0.6, 0.35 + Math.random() * 0.3);
+          playSynthTick("shock", 0.8);
         }
       } else if (type === "progress") {
         const now = performance.now();
@@ -744,7 +1086,6 @@
     });
   }
 
-  // BroadcastChannel bridge with ComfyUI frontend extension (receives live node titles + heartbeat)
   let bus = null;
   try {
     bus = new BroadcastChannel("comfy-logblaster-bus");
@@ -769,7 +1110,6 @@
     }, 1500);
   } catch (_) {}
 
-  // Poll zero-overhead NVML GPU telemetry
   async function pollTelemetry() {
     try {
       const res = await fetch("/logblaster/telemetry", { cache: "no-store" });
@@ -784,7 +1124,6 @@
   setInterval(pollTelemetry, 1000);
   pollTelemetry();
 
-  // 1-second velocity counter rollup
   setInterval(() => {
     state.cpsDisplay = state.charsThisSec;
     state.lpsDisplay = state.linesThisSec;
@@ -793,7 +1132,7 @@
   }, 1000);
 
   // =========================================================================
-  // 5. SYNTHETIC "TEST BLAST" DEMO GENERATOR (HOTKEY: B)
+  // 6. SYNTHETIC "TEST BLAST" DEMO GENERATOR (HOTKEY: B)
   // =========================================================================
   let demoTimers = [];
   function startTestBlast() {
@@ -821,7 +1160,6 @@
       [840,  "[KokoroTTS] Synthesizing 14 dialogue stems (fp16) -> 48kHz broadcast master\n"],
     ];
 
-    // Add rapid tqdm carriage-return progress updates
     for (let s = 1; s <= 14; s++) {
       const pct = Math.round((s / 14) * 100);
       const filled = Math.round((s / 14) * 22);
@@ -846,7 +1184,7 @@
         { step: s, max: 24, node: "OTR_VideoRenderBatch (#74)" },
       ]);
     }
-    script.push([4120, "\n[WARNING] Transient high-frequency transient clamped at frame 97 (+0.3 dB headroom guard)\n"]);
+    script.push([4120, "\n[WARNING] Transient high-frequency peak clamped at frame 97 (+0.3 dB headroom guard)\n"]);
     script.push([4280, "[VideoHelperSuite] Muxing H.264 High@L4.2 + 48kHz PCM -> otr/obs/episode_final.mp4\n", { shock: true, node: "OTR_ObsPublish (#92)" }]);
     script.push([4520, "[OldTimeRadio] obs_publish OK -> verified deliverable on disk (121 frames, 0 dropped)\n"]);
     script.push([4680, "Prompt executed in 00:04.68 === COMPLETE ===\n", { complete: true }]);
@@ -878,13 +1216,12 @@
   document.getElementById("btnTestBlast").addEventListener("click", startTestBlast);
 
   // =========================================================================
-  // 6. OFFSCREEN HIGH-DPI 2D LOG TEXT + SPECTRUM CANVAS (TRANSPARENT ALPHA!)
+  // 7. OFFSCREEN HIGH-DPI 2D LOG TEXT + SPECTRUM CANVAS (TRANSPARENT ALPHA!)
   // =========================================================================
   const textCanvas = document.createElement("canvas");
   const ctx = textCanvas.getContext("2d", { alpha: true });
 
   function getPaletteColors() {
-    // When tintMode > 0, remap text palette to classic monochrome phosphor tube
     if (state.tintMode === 1) {
       return { primary: "#ffb627", bright: "#fff1b8", dim: "#b87400", accent: "#ffd166" };
     }
@@ -894,9 +1231,7 @@
     if (state.tintMode === 3) {
       return { primary: "#45eaff", bright: "#e0fbff", dim: "#1b8ca3", accent: "#94f5ff" };
     }
-    // AUTO per preset
     if (state.preset === 2) {
-      // Vintage Radio Oscilloscope defaults to vector cathode teal-green with warm copper labels
       return { primary: null, bright: "#e6fff5", dim: "#3ca382", accent: "#38ffb3", headerAccent: "#ffb347" };
     }
     return { primary: null, bright: "#ffffff", dim: "#6c8ea3", accent: "#4df3ff", headerAccent: "#4df3ff" };
@@ -907,8 +1242,6 @@
     const h = textCanvas.height;
     const dpr = textCanvas._dpr || 1;
 
-    // CRITICAL: clear to transparent (rgba 0,0,0,0) so WebGL2 fragment shaders
-    // have an exact glyph alpha mask (texel.a > 0 ONLY on characters & HUD traces)!
     ctx.clearRect(0, 0, w, h);
     ctx.save();
     ctx.scale(dpr, dpr);
@@ -918,11 +1251,9 @@
     const pal = getPaletteColors();
     const accent = pal.headerAccent || pal.accent;
 
-    // --- TOP TELEMETRY & LIVE SPECTRUM DECK ---
     const headerH = 92;
-    const padX = 20;
+    const padX = 28;
 
-    // Crisp vector divider lines (processed through the CRT/Glitch/Scope shaders!)
     ctx.strokeStyle = pal.primary || "rgba(77, 243, 255, 0.45)";
     ctx.lineWidth = 1.2;
     ctx.beginPath();
@@ -930,7 +1261,6 @@
     ctx.lineTo(vw - padX, headerH);
     ctx.stroke();
 
-    // Left block: Title + Status Badge + Active Node + Progress Bar
     ctx.font = "bold 13px 'Cascadia Mono', 'Consolas', monospace";
     ctx.fillStyle = pal.bright;
     ctx.fillText("COMFYUI // LOG BLASTER", padX, 22);
@@ -946,17 +1276,15 @@
     ctx.fillStyle = badgeColor;
     ctx.fillText(`[${wsTag}]`, padX + 196, 22);
 
-    // Active node + elapsed timer
     const elapsed = state.runState === "BLASTING" && state.runStartMs
       ? ((nowMs - state.runStartMs) / 1000).toFixed(1) + "s"
       : (state.lastElapsedSec > 0 ? state.lastElapsedSec.toFixed(1) + "s" : "0.0s");
     ctx.font = "12px 'Cascadia Mono', 'Consolas', monospace";
     ctx.fillStyle = pal.primary || "#bfe8ff";
-    const nodeText = `NODE: ${state.activeNodeTitle}`.slice(0, 46);
+    const nodeText = `NODE: ${state.activeNodeTitle}`.slice(0, 44);
     ctx.fillText(nodeText, padX, 44);
 
-    // Step progress bar
-    const barW = Math.min(310, vw * 0.27);
+    const barW = Math.min(300, vw * 0.26);
     const barY = 56;
     const barH = 11;
     ctx.strokeStyle = pal.dim;
@@ -973,9 +1301,9 @@
       : `T+${elapsed}  |  ${state.lpsDisplay} lines/s  ${state.cpsDisplay} chars/s`;
     ctx.fillText(stepStr, padX, 82);
 
-    // Center block: 48-Band Live Character-Entropy Spectrum + Oscilloscope Trace
-    const specLeft = Math.max(365, vw * 0.34);
-    const specRight = Math.min(vw - 290, vw * 0.69);
+    // Center block: 48-Band Live Audio FFT / Token Spectrum + Waveform
+    const specLeft = Math.max(368, vw * 0.34);
+    const specRight = Math.min(vw - 296, vw * 0.69);
     const specW = specRight - specLeft;
     if (specW > 120) {
       const binW = specW / SPECTRUM_BINS;
@@ -983,12 +1311,11 @@
       const maxBarH = 54;
 
       for (let i = 0; i < SPECTRUM_BINS; i++) {
-        // Decay spectrum smoothly
-        state.spectrum[i] = Math.max(0.03, state.spectrum[i] - dtSec * 1.85);
+        state.spectrum[i] = Math.max(0.03, state.spectrum[i] - dtSec * (state.audioActive ? 3.2 : 1.85));
         if (state.spectrum[i] > state.spectrumPeak[i]) {
           state.spectrumPeak[i] = state.spectrum[i];
         } else {
-          state.spectrumPeak[i] = Math.max(0.03, state.spectrumPeak[i] - dtSec * 0.75);
+          state.spectrumPeak[i] = Math.max(0.03, state.spectrumPeak[i] - dtSec * 0.85);
         }
 
         const val = Math.min(1.0, state.spectrum[i]);
@@ -998,33 +1325,36 @@
         if (pal.primary) {
           ctx.fillStyle = val > 0.72 ? pal.bright : pal.primary;
         } else {
-          const hue = 175 + (i / SPECTRUM_BINS) * 145;
+          const hue = state.audioActive
+            ? 145 + (i / SPECTRUM_BINS) * 185
+            : 175 + (i / SPECTRUM_BINS) * 145;
           ctx.fillStyle = val > 0.78 ? "#ffffff" : `hsl(${hue}, 95%, 62%)`;
         }
         ctx.fillRect(bx + 0.5, baseY - bh, Math.max(1.5, binW - 1.6), bh);
 
-        // Peak hold cap
         const peakY = baseY - Math.min(1.0, state.spectrumPeak[i]) * maxBarH - 2;
         ctx.fillStyle = pal.bright;
         ctx.fillRect(bx + 0.5, peakY, Math.max(1.5, binW - 1.6), 1.6);
       }
 
-      // Overlay live log-character waveform ribbon across top of spectrum
       ctx.strokeStyle = pal.bright;
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       for (let s = 0; s < WAVE_SAMPLES; s++) {
         const idx = (state.waveWriteIdx + s) % WAVE_SAMPLES;
         const wx = specLeft + (s / (WAVE_SAMPLES - 1)) * specW;
-        const wy = 24 + state.waveform[idx] * 14;
+        const wy = 24 + state.waveform[idx] * 15;
         if (s === 0) ctx.moveTo(wx, wy);
         else ctx.lineTo(wx, wy);
       }
       ctx.stroke();
 
       ctx.font = "10px 'Cascadia Mono', 'Consolas', monospace";
-      ctx.fillStyle = pal.dim;
-      ctx.fillText("LOG TOKEN SPECTRUM // LIVE STREAM ENTROPY", specLeft, 87);
+      ctx.fillStyle = state.audioActive ? (pal.primary || "#38ffb3") : pal.dim;
+      const specLabel = state.audioActive
+        ? `LIVE AUDIO FFT REACTIVE [${state.audioInMode !== "OFF" ? state.audioInMode : "SYNTH"}] // BASS ${(state.audioBass * 100).toFixed(0)}%`
+        : "LOG TOKEN SPECTRUM // LIVE STREAM ENTROPY";
+      ctx.fillText(specLabel, specLeft, 87);
     }
 
     // Right block: Live RTX 5080 Telemetry + Active Shader GPU Proof
@@ -1050,7 +1380,6 @@
         ctx.fillText(`GPU ${String(gt.gpu_util).padStart(3, " ")}% | VRAM ${vramGib}/${totGib}G`, rightX, 38);
         ctx.fillText(`TMP  ${String(gt.temp_c).padStart(2, " ")}C | PWR ${gt.power_w}W`, rightX, 54);
 
-        // Mini dual gauge bars
         const gw = 250;
         ctx.fillStyle = "rgba(120, 170, 195, 0.24)";
         ctx.fillRect(rightX, 60, gw, 5);
@@ -1070,13 +1399,12 @@
 
     // --- MAIN BLASTING LOG TEXT VIEWPORT ---
     const logTop = headerH + 10;
-    const logBottom = vh - 16;
+    const logBottom = vh - 18;
     const availH = Math.max(60, logBottom - logTop);
     const fs = state.fontSize;
     const lineH = Math.round(fs * 1.42);
     const visibleCount = Math.max(3, Math.floor(availH / lineH));
 
-    // Smooth sub-line kinetic scroll decay
     state.smoothScrollPx *= Math.pow(0.0008, dtSec);
     if (state.smoothScrollPx < 0.35 || state.paused) state.smoothScrollPx = 0;
 
@@ -1101,10 +1429,8 @@
       if (y < logTop - lineH || y > logBottom + lineH) continue;
 
       const ageMs = Math.max(0, nowMs - line.ts);
-      // Fresh log lines ignite white-hot for 280ms so the GPU bloom shader flares on impact!
       const birthFlash = ageMs < 280 ? Math.pow(1.0 - ageMs / 280, 1.7) : 0.0;
 
-      // Left energy gutter bar
       if (line.kind !== "normal" || birthFlash > 0.25) {
         const gutterColor = pal.primary || (
           line.kind === "error" ? "#ff3860" :
@@ -1116,11 +1442,9 @@
         ctx.fillRect(padX, y - fs + 2, 3.5, fs + 1);
       }
 
-      // Timestamp
       ctx.fillStyle = birthFlash > 0.55 ? pal.bright : pal.dim;
       ctx.fillText(line.timeStr, padX + 8, y);
 
-      // Colored spans
       let curX = textStartX;
       for (let s = 0; s < line.spans.length; s++) {
         const sp = line.spans[s];
@@ -1145,14 +1469,12 @@
         curX += ctx.measureText(sp.text).width;
       }
 
-      // Leading cathode beam spark on freshly blasted lines
       if (birthFlash > 0.15 && curX < vw - padX) {
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(Math.min(vw - padX - 12, curX + 4), y - fs + 3, 8 * birthFlash, fs - 1);
       }
     }
 
-    // Pulsing terminal block cursor at live stream tail
     if (!state.paused && Math.sin(nowMs * 0.011) > -0.2) {
       ctx.fillStyle = pal.bright;
       ctx.fillRect(padX + 8, logBottom - 2, fs * 0.65, 3);
@@ -1162,11 +1484,10 @@
   }
 
   // =========================================================================
-  // 7. WEBGL2 2-PASS GPU SHADER ENGINE (PING-PONG FEEDBACK + 4 PRESETS)
+  // 8. WEBGL2 2-PASS GPU SHADER ENGINE (+ LIVE 256x2 AUDIO WAVE/FFT TEXTURE!)
   // =========================================================================
   const glCanvas = document.getElementById("glCanvas");
   const gl = glCanvas.getContext("webgl2", {
-    // Prefer low-power integrated GPU (Intel Graphics) so RTX 5080 keeps 100% VRAM & CUDA!
     powerPreference: preferHighGpu ? "high-performance" : "low-power",
     alpha: false,
     antialias: false,
@@ -1176,7 +1497,6 @@
   });
 
   if (!gl) {
-    // Graceful 2D fallback if WebGL2 is disabled
     document.body.appendChild(textCanvas);
     textCanvas.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;";
   } else {
@@ -1184,7 +1504,6 @@
       const dbg = gl.getExtension("WEBGL_debug_renderer_info");
       if (dbg) {
         const rawRenderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
-        // Extract clean GPU name from ANGLE (...) string
         const m = rawRenderer.match(/ANGLE \([^,]+,\s*([^,(]+)/i);
         state.shaderRendererName = (m ? m[1] : rawRenderer).replace(/Direct3D11.*$/i, "").trim() || "WebGL2 GPU";
       }
@@ -1195,14 +1514,12 @@
 precision highp float;
 out vec2 v_uv;
 void main() {
-  // Fullscreen triangle (3 vertices, zero VBO needed)
   vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
   v_uv = pos;
   gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
 }
 `;
 
-  // PASS 1: Temporal GPU Feedback Shader (Phosphor Persistence + Matrix Character Drip + Zoom Trails)
   const FEEDBACK_FRAG = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -1215,6 +1532,7 @@ uniform float u_time;
 uniform int u_preset;
 uniform float u_fx;
 uniform float u_blastRate;
+uniform float u_audioBass;
 
 float hash11(float p) {
   p = fract(p * 0.1031);
@@ -1233,44 +1551,38 @@ void main() {
   }
 
   vec3 trail = vec3(0.0);
+  float drive = clamp(u_blastRate + u_audioBass * 0.85, 0.0, 1.8);
 
   if (u_preset == 0) {
-    // PRESET 1: RETRO CRT PHOSPHOR PERSISTENCE
     vec3 prev = texture(u_prevTex, v_uv).rgb;
-    float decay = mix(0.35, 0.76, clamp(fx, 0.0, 1.2));
+    float decay = mix(0.35, 0.78, clamp(fx + u_audioBass * 0.15, 0.0, 1.25));
     trail = prev * decay;
     vec3 currentLit = live.rgb * live.a;
     fragColor = vec4(max(trail, currentLit), live.a);
   } else if (u_preset == 1) {
-    // PRESET 2: CYBERPUNK GLITCH // MATRIX CHARACTER WAKE DRIP
-    // Sample slightly ABOVE current pixel so trails drip DOWNWARD from real log characters!
     float colId = floor(v_uv.x * (u_res.x / 9.0));
-    float colSpeed = (0.0022 + 0.0045 * hash11(colId + 7.13)) * (0.7 + u_blastRate * 0.7) * fx;
+    float colSpeed = (0.0022 + 0.0048 * hash11(colId + 7.13)) * (0.7 + drive * 0.75) * fx;
     vec2 dripUv = vec2(v_uv.x, min(0.999, v_uv.y + colSpeed));
 
     vec3 prevDrip = texture(u_prevTex, dripUv).rgb;
     vec4 srcAbove = texture(u_textTex, dripUv);
 
-    // Shimmering digital rain modulation per column
     float rainPulse = 0.84 + 0.16 * sin(u_time * 9.0 + colId * 3.7 + v_uv.y * 45.0);
     vec3 matrixTint = mix(vec3(0.10, 1.0, 0.58), vec3(0.25, 0.92, 1.0), hash11(colId * 3.1));
 
-    vec3 spawnedWake = srcAbove.rgb * srcAbove.a * matrixTint * 0.52 * clamp(fx, 0.0, 1.3);
+    vec3 spawnedWake = srcAbove.rgb * srcAbove.a * matrixTint * (0.52 + 0.22 * u_audioBass) * clamp(fx, 0.0, 1.35);
     trail = max(prevDrip * 0.875 * rainPulse, spawnedWake);
     vec3 currentLit = live.rgb * live.a;
     fragColor = vec4(max(trail * 0.88, currentLit), live.a);
   } else if (u_preset == 2) {
-    // PRESET 3: VINTAGE RADIO OSCILLOSCOPE (P7 DUAL-STAGE RADAR PHOSPHOR)
     vec3 prev = texture(u_prevTex, v_uv).rgb;
-    // Blue-white flash decays fast; emerald-green P7 phosphor lingers longer
-    vec3 p7Decay = vec3(0.58, 0.84, 0.72) * clamp(0.65 + 0.22 * fx, 0.0, 0.91);
+    vec3 p7Decay = vec3(0.58, 0.85, 0.73) * clamp(0.66 + 0.22 * fx, 0.0, 0.91);
     trail = prev * p7Decay;
     vec3 currentLit = live.rgb * live.a;
     fragColor = vec4(max(trail, currentLit), live.a);
   } else {
-    // PRESET 4: ARCADE NEON // RADIAL ZOOM LIGHT-STREAK ECHO
     vec2 center = vec2(0.5, 0.5);
-    float zoomAmt = (0.0025 + 0.005 * clamp(u_blastRate, 0.0, 1.2)) * fx;
+    float zoomAmt = (0.0025 + 0.006 * clamp(drive, 0.0, 1.4)) * fx;
     vec2 zoomUv = center + (v_uv - center) * (1.0 - zoomAmt);
     vec3 prevZoom = texture(u_prevTex, clamp(zoomUv, vec2(0.001), vec2(0.999))).rgb;
     vec3 neonShift = vec3(prevZoom.r * 0.84, prevZoom.g * 0.72, prevZoom.b * 0.88);
@@ -1280,7 +1592,6 @@ void main() {
 }
 `;
 
-  // PASS 2: Final GPU Composite Shader (CRT Warp, Bloom, Glitch Tear, Scope Beam, Shockwave Refraction)
   const COMPOSITE_FRAG = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -1288,6 +1599,7 @@ out vec4 fragColor;
 
 uniform sampler2D u_textTex;
 uniform sampler2D u_feedbackTex;
+uniform sampler2D u_audioTex; // 256x2 R8: row y=0.25 waveform, row y=0.75 FFT
 uniform vec2 u_res;
 uniform float u_time;
 uniform int u_preset;
@@ -1300,6 +1612,9 @@ uniform float u_flashPulse;
 uniform float u_degauss;
 uniform float u_shockTime;
 uniform vec2 u_shockCenter;
+uniform float u_audioBass;
+uniform float u_audioMid;
+uniform float u_audioHigh;
 
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -1310,11 +1625,10 @@ float hash12(vec2 p) {
 vec2 barrelWarp(vec2 uv, float amount) {
   vec2 cc = uv * 2.0 - 1.0;
   float r2 = dot(cc, cc);
-  cc *= 1.0 + amount * r2 + (amount * 0.35) * r2 * r2;
+  cc *= 1.0 + amount * r2 + (amount * 0.32) * r2 * r2;
   return cc * 0.5 + 0.5;
 }
 
-// 9-Tap Multi-Radius HDR Phosphor Bloom directly around bright log text characters
 vec3 sampleBloom(sampler2D tex, vec2 uv, vec2 px, float radius) {
   vec3 acc = vec3(0.0);
   vec2 r1 = px * radius;
@@ -1337,11 +1651,17 @@ void main() {
   vec2 px = 1.0 / max(u_res, vec2(1.0));
   vec2 uv = v_uv;
 
-  // --- CRT / CABINET CURVATURE + DEGAUSS SHAKE ---
+  // Subtle bass-thump breathing zoom on heavy audio kicks
+  if (u_audioBass > 0.05 && fx > 0.05) {
+    float bassZoom = 1.0 - (u_audioBass * 0.0085 * min(fx, 1.3));
+    uv = vec2(0.5) + (uv - vec2(0.5)) * bassZoom;
+  }
+
+  // CRT / Cabinet barrel curvature
   float warpStrength = 0.0;
-  if (u_preset == 0) warpStrength = 0.075 * min(fx, 1.25);
-  else if (u_preset == 2) warpStrength = 0.045 * min(fx, 1.2);
-  else if (u_preset == 3) warpStrength = 0.055 * min(fx, 1.2);
+  if (u_preset == 0) warpStrength = 0.056 * min(fx, 1.25);
+  else if (u_preset == 2) warpStrength = 0.038 * min(fx, 1.2);
+  else if (u_preset == 3) warpStrength = 0.048 * min(fx, 1.2);
 
   if (u_degauss > 0.01 && fx > 0.05) {
     float wob = sin(u_time * 42.0 + uv.y * 12.0) * 0.014 * u_degauss * fx;
@@ -1353,7 +1673,6 @@ void main() {
     uv = barrelWarp(uv, warpStrength);
   }
 
-  // Outside curved CRT bezel -> sleek dark glass frame
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
     float bezelDist = max(max(-uv.x, uv.x - 1.0), max(-uv.y, uv.y - 1.0));
     vec3 bezel = vec3(0.015, 0.02, 0.028) * exp(-bezelDist * 45.0);
@@ -1361,7 +1680,7 @@ void main() {
     return;
   }
 
-  // --- RADIAL SHOCKWAVE REFRACTION ON LOG TEXT (Node switches / Completion / Preset 4) ---
+  // Radial Shockwave Refraction (fires on node switches, completion, AND audio beat drops!)
   float shockAge = u_time - u_shockTime;
   float shockRing = 0.0;
   if (shockAge >= 0.0 && shockAge < 1.35 && fx > 0.05) {
@@ -1376,11 +1695,15 @@ void main() {
     uv -= (dir / aspect) * band * refractScale;
   }
 
-  // --- PRESET-SPECIFIC UV DISPLACEMENT DIRECTLY ON LOG CHARACTERS ---
+  // Live audio waveform sample at this X/Y coordinate (-1..1)
+  float waveAtX = (texture(u_audioTex, vec2(uv.x, 0.25)).r - 0.5) * 2.0;
+  float waveAtY = (texture(u_audioTex, vec2(uv.y, 0.25)).r - 0.5) * 2.0;
+  float fftAtX  = texture(u_audioTex, vec2(uv.x * 0.72, 0.75)).r;
+
+  // Preset-specific UV displacement directly on log characters
   float sliceGlitch = 0.0;
   if (u_preset == 1 && fx > 0.05) {
-    // CYBERPUNK GLITCH: velocity + node/error driven horizontal scanband tearing on log text!
-    float activity = clamp(u_blastRate * 0.45 + u_nodePulse * 0.9 + u_glitchBurst * 1.4, 0.0, 1.8);
+    float activity = clamp(u_blastRate * 0.45 + u_nodePulse * 0.9 + u_glitchBurst * 1.4 + u_audioHigh * 0.75, 0.0, 1.9);
     float bandY = floor(uv.y * 34.0 + floor(u_time * 18.0));
     float rnd = hash12(vec2(bandY, floor(u_time * 22.0)));
     float threshold = 0.965 - 0.14 * activity * min(fx, 1.4);
@@ -1389,12 +1712,12 @@ void main() {
       uv.x = clamp(uv.x + sliceGlitch, 0.001, 0.999);
     }
   } else if (u_preset == 2 && fx > 0.05) {
-    // VINTAGE RADIO OSCILLOSCOPE: magnetic electron-beam deflection on log lines!
+    // Radio Oscilloscope: real audio pressure wave magnetically deflects the log text scanlines!
     float carrier = sin(uv.y * 55.0 - u_time * 7.5) * cos(uv.y * 19.0 + u_time * 4.2);
-    float energy = (0.0007 + 0.0024 * clamp(u_blastRate, 0.0, 1.2) + 0.0025 * u_stepPulse) * fx;
-    uv.x = clamp(uv.x + carrier * energy, 0.001, 0.999);
+    float energy = (0.0006 + 0.0022 * clamp(u_blastRate, 0.0, 1.2) + 0.0024 * u_stepPulse) * fx;
+    float audioDeflect = waveAtY * (0.0045 * clamp(u_audioMid + u_audioBass * 0.6, 0.0, 1.5)) * fx;
+    uv.x = clamp(uv.x + carrier * energy + audioDeflect, 0.001, 0.999);
   } else if (u_glitchBurst > 0.05 && fx > 0.05) {
-    // Error glitch shake across any preset
     float bandY = floor(uv.y * 28.0);
     float rnd = hash12(vec2(bandY, floor(u_time * 30.0)));
     if (rnd > 0.82) {
@@ -1402,18 +1725,17 @@ void main() {
     }
   }
 
-  // --- CHROMATIC ABERRATION & CRISP GLYPH SAMPLING ---
+  // Chromatic Aberration (reacts to audio treble + log blast velocity!)
   float chromaPx = 0.0;
   if (u_preset == 0) {
-    // Subtle corner convergence drift on curved CRT edges
     float edge = length(uv - 0.5) * 1.5;
-    chromaPx = (0.8 + 1.8 * edge) * fx;
+    chromaPx = (0.8 + 1.8 * edge + 2.5 * u_audioHigh) * fx;
   } else if (u_preset == 1) {
-    chromaPx = (1.8 + 4.5 * clamp(u_blastRate, 0.0, 1.2) + 9.0 * abs(sliceGlitch) * 20.0 + 7.0 * u_glitchBurst) * fx;
+    chromaPx = (1.8 + 4.5 * clamp(u_blastRate, 0.0, 1.2) + 5.5 * u_audioHigh + 9.0 * abs(sliceGlitch) * 20.0 + 7.0 * u_glitchBurst) * fx;
   } else if (u_preset == 2) {
-    chromaPx = (0.6 + 2.2 * u_stepPulse) * fx;
+    chromaPx = (0.6 + 2.2 * u_stepPulse + 2.4 * u_audioHigh) * fx;
   } else {
-    chromaPx = (1.5 + 8.0 * shockRing + 3.5 * u_nodePulse) * fx;
+    chromaPx = (1.5 + 8.0 * shockRing + 3.5 * u_nodePulse + 4.0 * u_audioBass) * fx;
   }
 
   vec2 cOff = vec2(px.x * chromaPx, 0.0);
@@ -1422,29 +1744,30 @@ void main() {
   vec4 tR = texture(u_textTex, clamp(uv - cOff, vec2(0.0), vec2(1.0)));
 
   vec3 crispGlyph = vec3(tL.r * tL.a, tC.g * tC.a, tR.b * tR.a);
-  float glyphMask = max(tC.a, max(tL.a, tR.a));
 
-  // Sample temporal feedback trails + multi-tap phosphor bloom
+  // Audio-bass reactive HDR Phosphor Bloom around log characters
   vec3 trail = texture(u_feedbackTex, uv).rgb;
-  float bloomRad = (u_preset == 3 ? 2.8 : (u_preset == 0 ? 2.4 : 2.1)) * (0.6 + 0.6 * fx);
-  vec3 bloom = sampleBloom(u_feedbackTex, uv, px, bloomRad) * (0.65 + 0.65 * fx);
+  float bloomRad = (u_preset == 3 ? 2.8 : (u_preset == 0 ? 2.4 : 2.1)) * (0.6 + 0.6 * fx + 0.55 * u_audioBass);
+  vec3 bloom = sampleBloom(u_feedbackTex, uv, px, bloomRad) * (0.65 + 0.65 * fx + 0.55 * u_audioBass);
 
-  // --- PROCEDURAL GPU BACKGROUNDS PER PRESET ---
+  // Procedural GPU Backgrounds + Real-Time Audio Oscilloscope / FFT Fields
   vec3 bg = vec3(0.015, 0.022, 0.032);
 
   if (u_preset == 0) {
-    // PRESET 1: Warm dark cathode glass + rolling 60Hz AC hum bar
     float hum = 0.5 + 0.5 * sin(uv.y * 6.2831 - u_time * 1.9);
     bg = vec3(0.016, 0.020, 0.026) + vec3(0.008, 0.012, 0.015) * pow(hum, 4.0) * fx;
   } else if (u_preset == 1) {
-    // PRESET 2: Cyber dark grid + active data scan laser
     vec2 grid = abs(fract(uv * vec2(48.0, 28.0)) - 0.5);
     float gLine = smoothstep(0.48, 0.5, max(grid.x, grid.y));
     float laser = exp(-abs(uv.y - fract(-u_time * 0.18)) * 55.0);
     bg = vec3(0.010, 0.016, 0.024) + vec3(0.0, 0.045, 0.055) * gLine * min(fx, 1.0);
     bg += vec3(0.02, 0.10, 0.12) * laser * min(fx, 1.2);
+    // Subtle background FFT skyline glow along bottom
+    if (uv.y < fftAtX * 0.22 * min(fx, 1.3)) {
+      bg += vec3(0.0, 0.06, 0.08) * (1.0 - uv.y / max(0.01, fftAtX * 0.22));
+    }
   } else if (u_preset == 2) {
-    // PRESET 3: VINTAGE RADIO OSCILLOSCOPE — Etched Tektronix graticule + live carrier wave!
+    // VINTAGE RADIO OSCILLOSCOPE — Etched Tektronix Graticule + TRUE LIVE AUDIO OSCILLOSCOPE BEAM!
     bg = vec3(0.008, 0.030, 0.022);
     vec2 div = uv * vec2(10.0, 8.0);
     vec2 fDiv = abs(fract(div) - 0.5);
@@ -1453,69 +1776,61 @@ void main() {
     float centerAxes = (abs(uv.x - 0.5) < 0.008 || abs(uv.y - 0.5) < 0.01) ? 1.0 : 0.0;
     float minorTicks = (1.0 - smoothstep(0.0, 0.06, min(subDiv.x, subDiv.y))) * centerAxes;
 
-    // Illuminated amber-copper / emerald etched scope graticule
     vec3 gratColor = mix(vec3(0.04, 0.16, 0.11), vec3(0.24, 0.15, 0.05), 0.45);
     bg += gratColor * (majorGrid * 0.55 + minorTicks * 0.75) * min(fx, 1.2);
 
-    // Live vector oscilloscope carrier wave weaving across screen mid-plane
-    float amp = (0.028 + 0.075 * clamp(u_blastRate, 0.0, 1.2) + 0.05 * u_stepPulse) * min(fx, 1.3);
-    float waveY = 0.46
-      + sin(uv.x * 18.0 - u_time * 6.5) * amp
-      + sin(uv.x * 43.0 + u_time * 11.2) * (amp * 0.42)
-      + cos(uv.x * 7.0 - u_time * 2.8) * (amp * 0.35);
+    float waveY = 0.46 + waveAtX * 0.22 * min(fx, 1.35);
     float beamDist = abs(uv.y - waveY);
-    float scopeCore = exp(-beamDist * 260.0);
-    float scopeHalo = exp(-beamDist * 38.0) * 0.25;
-    bg += (vec3(0.55, 1.0, 0.82) * scopeCore * 0.42 + vec3(0.08, 0.65, 0.42) * scopeHalo) * min(fx, 1.3);
+    float scopeCore = exp(-beamDist * 250.0);
+    float scopeHalo = exp(-beamDist * 34.0) * (0.26 + 0.25 * u_audioMid);
+    bg += (vec3(0.58, 1.0, 0.84) * scopeCore * 0.48 + vec3(0.08, 0.68, 0.44) * scopeHalo) * min(fx, 1.35);
   } else {
-    // PRESET 4: ARCADE NEON — 3D receding synthwave vector horizon grid + sunset glow
+    // ARCADE NEON — Audio-reactive 3D synthwave horizon grid + FFT equalizer horizon!
     bg = mix(vec3(0.025, 0.008, 0.048), vec3(0.008, 0.020, 0.045), uv.y);
-    if (uv.y < 0.36 && fx > 0.05) {
-      float py = max(0.015, 0.36 - uv.y);
+    float horizonY = 0.36 + u_audioBass * 0.035 * min(fx, 1.3);
+    if (uv.y < horizonY && fx > 0.05) {
+      float py = max(0.015, horizonY - uv.y);
       float z = 0.14 / py;
       float xProj = (uv.x - 0.5) * z * 2.4;
       float gx = 1.0 - smoothstep(0.0, 0.06, abs(fract(xProj) - 0.5));
-      float gz = 1.0 - smoothstep(0.0, 0.07, abs(fract(z - u_time * (0.8 + u_blastRate)) - 0.5));
-      float fade = smoothstep(0.36, 0.02, uv.y);
-      bg += vec3(0.45, 0.06, 0.38) * max(gx, gz) * fade * 0.42 * min(fx, 1.2);
+      float gz = 1.0 - smoothstep(0.0, 0.07, abs(fract(z - u_time * (0.8 + u_blastRate + u_audioBass)) - 0.5));
+      float fade = smoothstep(horizonY, 0.02, uv.y);
+      bg += vec3(0.48 + u_audioBass * 0.35, 0.06, 0.42) * max(gx, gz) * fade * 0.45 * min(fx, 1.25);
+    }
+    // Horizon FFT equalizer silhouette
+    float eqTop = horizonY + fftAtX * 0.14 * min(fx, 1.3);
+    if (uv.y >= horizonY && uv.y < eqTop) {
+      bg += vec3(0.32, 0.05, 0.28) * (1.0 - (uv.y - horizonY) / max(0.005, eqTop - horizonY)) * 0.45;
     }
   }
 
-  // --- COMBINE BACKGROUND + TRAILS + BLOOM + CRISP LOG CHARACTERS ---
   vec3 col = bg + trail * 0.55 + bloom;
 
   if (u_preset == 3 && fx > 0.1) {
-    // Arcade Neon plasma highlight tinting on bright characters
     vec3 neonGrad = mix(vec3(1.0, 0.38, 0.82), vec3(0.35, 0.96, 1.0), fract(uv.y * 2.2 - u_time * 0.25));
     float luma = dot(crispGlyph, vec3(0.299, 0.587, 0.114));
     crispGlyph = mix(crispGlyph, crispGlyph * 0.55 + neonGrad * luma * 0.85, 0.38 * min(fx, 1.2));
   }
 
-  // Ensure crisp readable foreground log text sits cleanly atop bloom & trails
-  col = max(col, crispGlyph) + crispGlyph * 0.22 * fx;
+  col = max(col, crispGlyph) + crispGlyph * (0.22 + 0.16 * u_audioBass) * fx;
 
-  // Shockwave glowing ring highlight
   if (shockRing > 0.002) {
     vec3 ringCol = u_preset == 3 ? vec3(1.0, 0.32, 0.78) : vec3(0.35, 0.95, 1.0);
     col += ringCol * shockRing * 0.42 * fx;
   }
 
-  // Slice glitch invert highlight in Cyberpunk mode
   if (abs(sliceGlitch) > 0.008) {
     col = mix(col, col.gbr + vec3(0.08, 0.0, 0.06), 0.35);
   }
 
-  // --- RASTER SCANLINES & TRINITRON APERTURE GRILLE ---
   if (fx > 0.04) {
     float scanFreq = u_res.y * 0.5;
     float scanWave = 0.5 + 0.5 * sin(uv.y * scanFreq * 3.14159);
-    // Authentic CRT beam widening: bright log characters bridge across scanline gaps!
     float charBrightness = clamp(dot(crispGlyph, vec3(0.333)), 0.0, 1.0);
     float scanDepth = (u_preset == 0 ? 0.26 : (u_preset == 2 ? 0.16 : 0.14)) * min(fx, 1.3) * (1.0 - charBrightness * 0.58);
     col *= (1.0 - scanDepth * scanWave);
 
     if (u_preset == 0 || u_preset == 3) {
-      // Subtle RGB aperture grille triads
       float triad = mod(floor(uv.x * u_res.x), 3.0);
       vec3 mask = triad < 1.0 ? vec3(1.06, 0.96, 0.96)
                 : (triad < 2.0 ? vec3(0.96, 1.06, 0.96) : vec3(0.96, 0.96, 1.06));
@@ -1523,14 +1838,12 @@ void main() {
     }
   }
 
-  // --- FLASH PULSE + CURVED GLASS VIGNETTE & SPECULAR CORNER SHEEN ---
   col += vec3(0.20, 0.38, 0.35) * u_flashPulse * 0.32 * min(fx, 1.2);
 
   vec2 vigUv = uv * (1.0 - uv.yx);
   float vig = pow(max(0.0, vigUv.x * vigUv.y * 16.0), 0.16 * min(fx, 1.2));
   col *= mix(1.0, vig, 0.75 * min(fx, 1.0));
 
-  // Subtle curved CRT glass corner reflection
   if ((u_preset == 0 || u_preset == 2) && fx > 0.1) {
     float sheen = exp(-length(uv - vec2(0.14, 0.88)) * 7.5) * 0.035 * min(fx, 1.0);
     col += vec3(0.7, 0.88, 1.0) * sheen;
@@ -1571,6 +1884,7 @@ void main() {
   let compositeProg = null;
   let emptyVao = null;
   let textTex = null;
+  let audioTex = null;
   let fboA = null, texA = null;
   let fboB = null, texB = null;
   let fbUniforms = {};
@@ -1593,7 +1907,6 @@ void main() {
   }
 
   function resizePipelines() {
-    // Cap DPR to 1.5 so text stays razor-sharp while Intel iGPU runs easily at 60fps (<0.4ms/frame)
     const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const w = Math.max(320, Math.floor(window.innerWidth * dpr));
     const h = Math.max(200, Math.floor(window.innerHeight * dpr));
@@ -1618,6 +1931,17 @@ void main() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    if (!audioTex) {
+      audioTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, audioTex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, AUDIO_TEX_WIDTH, 2, 0, gl.RED, gl.UNSIGNED_BYTE, state.audioTexBytes);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+
     if (fboA) { gl.deleteFramebuffer(fboA); gl.deleteTexture(texA); }
     if (fboB) { gl.deleteFramebuffer(fboB); gl.deleteTexture(texB); }
 
@@ -1632,13 +1956,14 @@ void main() {
     compositeProg = createProgram(VERT_SRC, COMPOSITE_FRAG);
     emptyVao = gl.createVertexArray();
 
-    for (const u of ["u_textTex", "u_prevTex", "u_res", "u_time", "u_preset", "u_fx", "u_blastRate"]) {
+    for (const u of ["u_textTex", "u_prevTex", "u_res", "u_time", "u_preset", "u_fx", "u_blastRate", "u_audioBass"]) {
       fbUniforms[u] = gl.getUniformLocation(feedbackProg, u);
     }
     for (const u of [
-      "u_textTex", "u_feedbackTex", "u_res", "u_time", "u_preset", "u_fx",
+      "u_textTex", "u_feedbackTex", "u_audioTex", "u_res", "u_time", "u_preset", "u_fx",
       "u_blastRate", "u_stepPulse", "u_nodePulse", "u_glitchBurst",
       "u_flashPulse", "u_degauss", "u_shockTime", "u_shockCenter",
+      "u_audioBass", "u_audioMid", "u_audioHigh",
     ]) {
       compUniforms[u] = gl.getUniformLocation(compositeProg, u);
     }
@@ -1648,7 +1973,7 @@ void main() {
   resizePipelines();
 
   // =========================================================================
-  // 8. MAIN 60FPS RENDER LOOP (PAUSES AUTOMATICALLY WHEN TAB HIDDEN)
+  // 9. MAIN RENDER LOOP
   // =========================================================================
   let lastFrameMs = performance.now();
   let fpsFrames = 0;
@@ -1672,7 +1997,6 @@ void main() {
       fpsTimerMs = nowMs;
     }
 
-    // Smooth exponential decay of GPU reactive pulses
     state.blastRate = Math.max(0.0, state.blastRate - dtSec * 0.72);
     state.stepPulse = Math.max(0.0, state.stepPulse - dtSec * 2.6);
     state.nodePulse = Math.max(0.0, state.nodePulse - dtSec * 1.9);
@@ -1680,7 +2004,7 @@ void main() {
     state.flashPulse = Math.max(0.0, state.flashPulse - dtSec * 1.8);
     state.degaussWobble = Math.max(0.0, state.degaussWobble - dtSec * 1.4);
 
-    // 1. Render crisp log text + live spectrum onto transparent 2D canvas
+    updateAudioAnalysis(nowMs, dtSec);
     renderTextTexture(nowMs, dtSec);
     if (!gl || !feedbackProg || !compositeProg) return;
 
@@ -1688,12 +2012,19 @@ void main() {
     const h = glCanvas.height;
     const tSec = nowMs * 0.001;
 
-    // 2. Upload textCanvas into u_textTex
+    // Upload 2D log text canvas -> TEXTURE0
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, textTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+
+    // Upload 512-byte live audio waveform+FFT -> TEXTURE2 (0.002ms!)
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, audioTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, AUDIO_TEX_WIDTH, 2, gl.RED, gl.UNSIGNED_BYTE, state.audioTexBytes);
 
     const readTex = pingPong ? texA : texB;
     const writeFbo = pingPong ? fboB : fboA;
@@ -1702,7 +2033,7 @@ void main() {
 
     gl.bindVertexArray(emptyVao);
 
-    // 3. PASS 1 -> Ping-Pong Temporal Feedback FBO
+    // PASS 1 -> Ping-Pong Temporal Feedback FBO
     gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
     gl.viewport(0, 0, w, h);
     gl.useProgram(feedbackProg);
@@ -1720,10 +2051,11 @@ void main() {
     gl.uniform1i(fbUniforms.u_preset, state.preset);
     gl.uniform1f(fbUniforms.u_fx, state.fxIntensity);
     gl.uniform1f(fbUniforms.u_blastRate, state.blastRate);
+    gl.uniform1f(fbUniforms.u_audioBass, state.audioBass);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // 4. PASS 2 -> Final GPU Shader Composite on Screen
+    // PASS 2 -> Final Audio-Reactive GPU Composite
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, w, h);
     gl.useProgram(compositeProg);
@@ -1735,6 +2067,10 @@ void main() {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, writeTex);
     gl.uniform1i(compUniforms.u_feedbackTex, 1);
+
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, audioTex);
+    gl.uniform1i(compUniforms.u_audioTex, 2);
 
     gl.uniform2f(compUniforms.u_res, w, h);
     gl.uniform1f(compUniforms.u_time, tSec);
@@ -1748,12 +2084,14 @@ void main() {
     gl.uniform1f(compUniforms.u_degauss, state.degaussWobble);
     gl.uniform1f(compUniforms.u_shockTime, state.shockwaveTime);
     gl.uniform2f(compUniforms.u_shockCenter, state.shockwaveCenter[0], state.shockwaveCenter[1]);
+    gl.uniform1f(compUniforms.u_audioBass, state.audioBass);
+    gl.uniform1f(compUniforms.u_audioMid, state.audioMid);
+    gl.uniform1f(compUniforms.u_audioHigh, state.audioHigh);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  // Boot banner + live WebSocket start
-  ingestLogChunk("[LogBlaster] WebGL2 GPU Log-Text Visualizer initialized (Keys: 1-4 Shaders | T Tint | B Test Blast | Space Pause)\n");
+  ingestLogChunk("[LogBlaster] Audio-Reactive WebGL2 GPU Log Visualizer ready (Keys: 1-4 Shaders | M Synth | A Audio In | B Test Blast)\n");
   ingestLogChunk(`[LogBlaster] Active Shader GPU: ${state.shaderRendererName} (powerPreference=${preferHighGpu ? "high-performance" : "low-power"})\n`);
   connectComfySocket();
   requestAnimationFrame(renderFrame);

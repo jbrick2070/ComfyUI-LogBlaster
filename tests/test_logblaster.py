@@ -122,6 +122,9 @@ def test_http_routes_and_shader_html() -> None:
     assert "VINTAGE RADIO OSCILLOSCOPE" in html_body
     assert "ARCADE NEON // SYNTHWAVE" in html_body
     assert 'powerPreference: preferHighGpu ? "high-performance" : "low-power"' in html_body
+    assert "createAnalyser" in html_body
+    assert "u_audioTex" in html_body
+    assert "SYNTH: OFF" in html_body
 
     telem_resp: web.Response = asyncio.run(
         stub_server.routes.handlers["/logblaster/telemetry"](None)
