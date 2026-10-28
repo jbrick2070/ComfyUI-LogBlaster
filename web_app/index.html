@@ -1,0 +1,1763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ComfyUI // LOG BLASTER — GPU Shader Terminal</title>
+<style>
+  :root {
+    --hud-bg: rgba(8, 12, 18, 0.82);
+    --hud-border: rgba(92, 225, 230, 0.32);
+    --hud-accent: #4df3ff;
+    --hud-hot: #ff3e7f;
+    --hud-ok: #38ffb3;
+    --hud-text: #d9f4ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #030508;
+    color: var(--hud-text);
+    font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", "Courier New", monospace;
+    user-select: none;
+  }
+  #glCanvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    display: block;
+  }
+  #controlDock {
+    position: fixed;
+    bottom: 14px;
+    right: 16px;
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 11px;
+    border-radius: 10px;
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-border);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
+    opacity: 0.42;
+    transition: opacity 0.2s ease, border-color 0.2s ease;
+    font-size: 11px;
+  }
+  #controlDock:hover, #controlDock:focus-within {
+    opacity: 0.98;
+    border-color: rgba(92, 225, 230, 0.72);
+  }
+  .dock-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 6px;
+    border-right: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .dock-group:last-child {
+    border-right: none;
+    padding-right: 0;
+  }
+  button.hud-btn {
+    background: rgba(255, 255, 255, 0.06);
+    color: #cbe8f6;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    transition: all 0.14s ease;
+  }
+  button.hud-btn:hover {
+    background: rgba(77, 243, 255, 0.18);
+    border-color: var(--hud-accent);
+    color: #ffffff;
+  }
+  button.hud-btn.is-active {
+    background: rgba(77, 243, 255, 0.26);
+    border-color: var(--hud-accent);
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(77, 243, 255, 0.38);
+  }
+  button.hud-btn.blast-btn {
+    background: rgba(255, 62, 127, 0.2);
+    border-color: rgba(255, 62, 127, 0.6);
+    color: #ffd6e5;
+  }
+  button.hud-btn.blast-btn:hover {
+    background: rgba(255, 62, 127, 0.38);
+    border-color: #ff6a9c;
+    color: #ffffff;
+    box-shadow: 0 0 12px rgba(255, 62, 127, 0.5);
+  }
+  .fx-label {
+    color: #9dc6d8;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    margin-right: 2px;
+  }
+  input[type="range"].fx-slider {
+    width: 72px;
+    accent-color: var(--hud-accent);
+    cursor: pointer;
+  }
+  #toastMsg {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 30;
+    background: rgba(10, 18, 26, 0.92);
+    border: 1px solid var(--hud-accent);
+    color: #e9fbff;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.22s ease;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.6);
+  }
+  #toastMsg.visible { opacity: 1; }
+</style>
+</head>
+<body>
+<canvas id="glCanvas"></canvas>
+<div id="toastMsg"></div>
+
+<div id="controlDock" aria-label="LogBlaster Shader Controls">
+  <div class="dock-group">
+    <button class="hud-btn is-active" data-preset="0" title="Hotkey: 1">1 CRT</button>
+    <button class="hud-btn" data-preset="1" title="Hotkey: 2">2 CYBER</button>
+    <button class="hud-btn" data-preset="2" title="Hotkey: 3">3 RADIO SCOPE</button>
+    <button class="hud-btn" data-preset="3" title="Hotkey: 4">4 ARCADE</button>
+  </div>
+  <div class="dock-group">
+    <button class="hud-btn" id="btnTint" title="Cycle Phosphor Palette (Hotkey: T)">TINT: AUTO</button>
+    <span class="fx-label">FX</span>
+    <input type="range" id="fxSlider" class="fx-slider" min="0" max="160" value="100" title="GPU Shader Intensity (0% crisp raw -> 160% overdrive)" />
+  </div>
+  <div class="dock-group">
+    <button class="hud-btn" id="btnFontDown" title="Smaller Log Text (Hotkey: -)">A-</button>
+    <button class="hud-btn" id="btnFontUp" title="Larger Log Text (Hotkey: +)">A+</button>
+    <button class="hud-btn" id="btnPause" title="Pause / Resume Auto-Scroll (Hotkey: Space)">LIVE</button>
+  </div>
+  <div class="dock-group">
+    <button class="hud-btn blast-btn" id="btnTestBlast" title="Fire a synthetic ComfyUI log storm to test GPU shaders (Hotkey: B)">TEST BLAST</button>
+    <button class="hud-btn" id="btnCopy" title="Copy plain-text logs to clipboard">COPY</button>
+    <button class="hud-btn" id="btnFullscreen" title="Toggle Fullscreen (Hotkey: F)">FULL</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // =========================================================================
+  // 1. STATE, RING BUFFER & TELEMETRY
+  // =========================================================================
+  const MAX_LINES = 3500;
+  const SPECTRUM_BINS = 48;
+  const WAVE_SAMPLES = 160;
+
+  const PRESET_NAMES = [
+    "RETRO CRT PHOSPHOR",
+    "CYBERPUNK GLITCH // MATRIX",
+    "VINTAGE RADIO OSCILLOSCOPE",
+    "ARCADE NEON // SYNTHWAVE",
+  ];
+  const TINT_NAMES = ["AUTO", "AMBER P3", "GREEN P31", "ICE CYAN"];
+
+  const params = new URLSearchParams(location.search);
+  const preferHighGpu = params.get("gpu") === "high";
+
+  const state = {
+    preset: Number(localStorage.getItem("logblaster.preset") || 0) % 4,
+    tintMode: Number(localStorage.getItem("logblaster.tint") || 0) % 4,
+    fxIntensity: Number(localStorage.getItem("logblaster.fx") ?? 100) / 100.0,
+    fontSize: Math.min(22, Math.max(11, Number(localStorage.getItem("logblaster.fontSize") || 14))),
+    paused: false,
+    scrollBackLines: 0,
+
+    // Live ComfyUI connection + execution state
+    wsConnected: false,
+    clientId: "logblaster-" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)),
+    runState: "IDLE", // IDLE | BLASTING | COMPLETE | ERROR
+    runStartMs: 0,
+    lastElapsedSec: 0,
+    activeNodeId: null,
+    activeNodeTitle: "Waiting for workflow...",
+    nodeTitleMap: new Map(),
+    stepVal: 0,
+    stepMax: 0,
+    stepRateSmooth: 0,
+    lastStepMs: 0,
+
+    // Log stream ring buffer & CR line tracker
+    lines: [],
+    lineCounter: 0,
+    partialCrActive: false,
+    ansiState: { fg: null, bold: false },
+
+    // Kinetic & GPU reactive uniforms
+    charsThisSec: 0,
+    linesThisSec: 0,
+    cpsDisplay: 0,
+    lpsDisplay: 0,
+    blastRate: 0.0,       // smoothed 0..1.5 log velocity
+    stepPulse: 0.0,       // decays from 1->0 on sampler step
+    nodePulse: 0.0,       // decays from 1->0 on node switch
+    glitchBurst: 0.0,     // decays from 1->0 on error/glitch cue
+    flashPulse: 0.0,      // decays from 1->0 on start/complete
+    degaussWobble: 0.0,   // decays from 1->0 on workflow start
+    shockwaveTime: -10.0, // time when radial shockwave launched
+    shockwaveCenter: [0.5, 0.5],
+    smoothScrollPx: 0.0,
+
+    // Real-time character spectrum & waveform
+    spectrum: new Float32Array(SPECTRUM_BINS),
+    spectrumPeak: new Float32Array(SPECTRUM_BINS),
+    waveform: new Float32Array(WAVE_SAMPLES),
+    waveWriteIdx: 0,
+
+    // Hardware telemetry (5080 + Shader Renderer GPU)
+    gpuTelemetry: {
+      available: false,
+      gpu_name: "Detecting GPU...",
+      gpu_util: 0,
+      vram_used_mib: 0,
+      vram_total_mib: 0,
+      temp_c: 0,
+      power_w: 0,
+    },
+    shaderRendererName: "WebGL2 GPU",
+    fps: 60,
+  };
+
+  // =========================================================================
+  // 2. TOAST & UI CONTROLS
+  // =========================================================================
+  const toastEl = document.getElementById("toastMsg");
+  let toastTimer = null;
+  function showToast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add("visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 1600);
+  }
+
+  const presetBtns = Array.from(document.querySelectorAll("[data-preset]"));
+  const btnTint = document.getElementById("btnTint");
+  const fxSlider = document.getElementById("fxSlider");
+  const btnPause = document.getElementById("btnPause");
+
+  function syncControlsUI() {
+    presetBtns.forEach((b) => {
+      b.classList.toggle("is-active", Number(b.dataset.preset) === state.preset);
+    });
+    btnTint.textContent = "TINT: " + TINT_NAMES[state.tintMode];
+    fxSlider.value = String(Math.round(state.fxIntensity * 100));
+    btnPause.textContent = state.paused
+      ? (state.scrollBackLines > 0 ? `PAUSED (-${state.scrollBackLines})` : "PAUSED")
+      : "LIVE";
+    btnPause.classList.toggle("is-active", state.paused);
+  }
+
+  function setPreset(idx) {
+    state.preset = ((idx % 4) + 4) % 4;
+    localStorage.setItem("logblaster.preset", String(state.preset));
+    state.nodePulse = Math.max(state.nodePulse, 0.55);
+    syncControlsUI();
+    showToast(`SHADER ${state.preset + 1}: ${PRESET_NAMES[state.preset]}`);
+  }
+
+  presetBtns.forEach((b) => {
+    b.addEventListener("click", () => setPreset(Number(b.dataset.preset)));
+  });
+
+  btnTint.addEventListener("click", () => {
+    state.tintMode = (state.tintMode + 1) % 4;
+    localStorage.setItem("logblaster.tint", String(state.tintMode));
+    syncControlsUI();
+    showToast(`PALETTE: ${TINT_NAMES[state.tintMode]}`);
+  });
+
+  fxSlider.addEventListener("input", () => {
+    state.fxIntensity = Number(fxSlider.value) / 100.0;
+    localStorage.setItem("logblaster.fx", fxSlider.value);
+  });
+
+  document.getElementById("btnFontDown").addEventListener("click", () => {
+    state.fontSize = Math.max(11, state.fontSize - 1);
+    localStorage.setItem("logblaster.fontSize", String(state.fontSize));
+    showToast(`FONT SIZE: ${state.fontSize}px`);
+  });
+
+  document.getElementById("btnFontUp").addEventListener("click", () => {
+    state.fontSize = Math.min(22, state.fontSize + 1);
+    localStorage.setItem("logblaster.fontSize", String(state.fontSize));
+    showToast(`FONT SIZE: ${state.fontSize}px`);
+  });
+
+  btnPause.addEventListener("click", () => {
+    state.paused = !state.paused;
+    if (!state.paused) state.scrollBackLines = 0;
+    syncControlsUI();
+  });
+
+  document.getElementById("btnCopy").addEventListener("click", async () => {
+    const rawText = state.lines.map((l) => `${l.timeStr} ${l.raw}`).join("\n");
+    try {
+      await navigator.clipboard.writeText(rawText);
+      showToast(`COPIED ${state.lines.length} LOG LINES`);
+    } catch (_) {
+      showToast("CLIPBOARD UNAVAILABLE");
+    }
+  });
+
+  document.getElementById("btnFullscreen").addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+  });
+
+  window.addEventListener("wheel", (ev) => {
+    const deltaLines = Math.sign(ev.deltaY) * 4;
+    if (deltaLines < 0) {
+      state.paused = true;
+      state.scrollBackLines = Math.min(
+        Math.max(0, state.lines.length - 5),
+        state.scrollBackLines - deltaLines
+      );
+    } else if (state.scrollBackLines > 0) {
+      state.scrollBackLines = Math.max(0, state.scrollBackLines - deltaLines);
+      if (state.scrollBackLines === 0) state.paused = false;
+    }
+    syncControlsUI();
+  }, { passive: true });
+
+  window.addEventListener("keydown", (ev) => {
+    if (ev.target && ev.target.tagName === "INPUT") return;
+    if (ev.key === "1") setPreset(0);
+    else if (ev.key === "2") setPreset(1);
+    else if (ev.key === "3") setPreset(2);
+    else if (ev.key === "4") setPreset(3);
+    else if (ev.key === "t" || ev.key === "T") btnTint.click();
+    else if (ev.key === " ") { ev.preventDefault(); btnPause.click(); }
+    else if (ev.key === "-" || ev.key === "_") document.getElementById("btnFontDown").click();
+    else if (ev.key === "=" || ev.key === "+") document.getElementById("btnFontUp").click();
+    else if (ev.key === "f" || ev.key === "F") document.getElementById("btnFullscreen").click();
+    else if (ev.key === "b" || ev.key === "B") startTestBlast();
+  });
+
+  syncControlsUI();
+
+  // =========================================================================
+  // 3. ANSI + SEMANTIC LOG PARSER & SIGNAL ANALYZER
+  // =========================================================================
+  const ANSI_16 = {
+    30: "#586e75", 31: "#ff4d6d", 32: "#38ffb3", 33: "#ffc845",
+    34: "#52b7ff", 35: "#ff66d9", 36: "#4df3ff", 37: "#e6f4ff",
+    90: "#7a93a6", 91: "#ff6b86", 92: "#69ffca", 93: "#ffe066",
+    94: "#80cbff", 95: "#ff8ce6", 96: "#88f8ff", 97: "#ffffff",
+  };
+
+  function triggerShockwave(cx = 0.5, cy = 0.48) {
+    state.shockwaveTime = performance.now() * 0.001;
+    state.shockwaveCenter = [cx, cy];
+  }
+
+  function feedSignalAnalyzer(text, energyBoost) {
+    const len = text.length;
+    if (!len) return;
+    state.charsThisSec += len;
+    state.blastRate = Math.min(1.6, state.blastRate + Math.min(0.45, len * 0.0022) + energyBoost * 0.18);
+
+    let waveAcc = 0;
+    const stride = Math.max(1, Math.floor(len / 48));
+    for (let i = 0; i < len; i += stride) {
+      const code = text.charCodeAt(i);
+      let bin = 0;
+      if (code >= 48 && code <= 57) {
+        // Digits -> mid-high telemetry bins (24..33)
+        bin = 24 + (code - 48);
+      } else if (code >= 65 && code <= 90) {
+        // Uppercase identifiers -> low-mid carrier bins (2..14)
+        bin = 2 + ((code - 65) % 13);
+      } else if (code >= 97 && code <= 122) {
+        // Lowercase prose -> mid bins (15..23)
+        bin = 15 + ((code - 97) % 9);
+      } else if (code > 127) {
+        // Unicode block bars (tqdm ████) -> hot upper bins (40..47)
+        bin = 40 + (code % 8);
+      } else {
+        // Brackets, slashes, operators -> high bins (34..39)
+        bin = 34 + (code % 6);
+      }
+      state.spectrum[bin] = Math.min(1.35, state.spectrum[bin] + 0.16 + energyBoost * 0.14);
+      waveAcc += ((code & 31) - 15.5) / 15.5;
+    }
+    // Bass bins respond to line impacts
+    state.spectrum[0] = Math.min(1.35, state.spectrum[0] + 0.25 + energyBoost * 0.3);
+    state.spectrum[1] = Math.min(1.35, state.spectrum[1] + 0.20 + energyBoost * 0.25);
+
+    const sampleCount = Math.ceil(len / stride);
+    const normWave = Math.max(-1, Math.min(1, (waveAcc / Math.max(1, sampleCount)) * (0.65 + state.blastRate * 0.6)));
+    state.waveform[state.waveWriteIdx] = normWave;
+    state.waveWriteIdx = (state.waveWriteIdx + 1) % WAVE_SAMPLES;
+  }
+
+  function classifySemanticLine(plain) {
+    if (/\[LogBlaster:SHOCKWAVE\]/i.test(plain)) {
+      triggerShockwave(0.5, 0.5);
+      state.flashPulse = Math.max(state.flashPulse, 0.7);
+      return { color: "#4df3ff", kind: "shock", energy: 0.9 };
+    }
+    if (/\[LogBlaster:GLITCH_BURST\]/i.test(plain)) {
+      state.glitchBurst = 1.0;
+      return { color: "#ff3e7f", kind: "error", energy: 1.0 };
+    }
+    if (/\[LogBlaster:PHOSPHOR_FLASH\]/i.test(plain)) {
+      state.flashPulse = 1.0;
+      return { color: "#fff3a1", kind: "complete", energy: 0.95 };
+    }
+    if (/(\[ERROR\]|Traceback|Exception:|RenderError|CUDA out of memory|\bFAILED\b)/i.test(plain)) {
+      state.glitchBurst = Math.max(state.glitchBurst, 0.85);
+      return { color: "#ff4769", kind: "error", energy: 1.0 };
+    }
+    if (/(\[WARNING\]|\bWARN\b|UserWarning|FutureWarning)/i.test(plain)) {
+      return { color: "#ffc94a", kind: "warn", energy: 0.45 };
+    }
+    if (/(Prompt executed in|obs_publish OK|execution_success|=== COMPLETE ===)/i.test(plain)) {
+      triggerShockwave(0.5, 0.42);
+      state.flashPulse = Math.max(state.flashPulse, 0.85);
+      return { color: "#4dffb5", kind: "complete", energy: 0.95 };
+    }
+    if (/(\d+%\|[█▉▊▋▌▍▎▏#=\- ]+\||\bit\/s\b|\bs\/it\b|\btok\/s\b)/.test(plain)) {
+      state.stepPulse = Math.max(state.stepPulse, 0.55);
+      return { color: "#7ef9ff", kind: "progress", energy: 0.65 };
+    }
+    if (/(\[OldTimeRadio\]|\[OTR\]|\[LogBlaster\]|\[launch\])/i.test(plain)) {
+      return { color: "#5ce6ff", kind: "badge", energy: 0.4 };
+    }
+    return { color: "#cde8f6", kind: "normal", energy: 0.12 };
+  }
+
+  function tokenizeSpans(rawSegment, baseColor) {
+    // Parse ANSI SGR sequences first; then highlight tokens in uncolored chunks
+    const spans = [];
+    const ansiRegex = /\x1b\[([0-9;]*)m/g;
+    let lastIdx = 0;
+    let curColor = null;
+    let bold = false;
+    let match;
+
+    const pushHighlightedChunk = (chunk, explicitColor) => {
+      if (!chunk) return;
+      if (explicitColor) {
+        spans.push({ text: chunk, color: explicitColor, hot: bold });
+        return;
+      }
+      // Tokenize tags, percentages/bars, numbers+units for bright phosphor bloom
+      const tokRe = /(\[[^\]]{2,28}\]|\d+%\|[^|]+\||(?:\b\d+(?:\.\d+)?(?:it\/s|s\/it|tok\/s|MiB|GiB|MB|GB|ms|s|%)\b))/g;
+      let tLast = 0;
+      let tm;
+      while ((tm = tokRe.exec(chunk)) !== null) {
+        if (tm.index > tLast) {
+          spans.push({ text: chunk.slice(tLast, tm.index), color: baseColor, hot: false });
+        }
+        const tok = tm[0];
+        let tokColor = "#ffffff";
+        if (tok.startsWith("[")) {
+          if (/error|fail/i.test(tok)) tokColor = "#ff5c7c";
+          else if (/warn/i.test(tok)) tokColor = "#ffd15c";
+          else tokColor = "#59f3ff";
+        } else if (tok.includes("%|")) {
+          tokColor = "#7affd4";
+        } else {
+          tokColor = "#ffe680";
+        }
+        spans.push({ text: tok, color: tokColor, hot: true });
+        tLast = tm.index + tok.length;
+      }
+      if (tLast < chunk.length) {
+        spans.push({ text: chunk.slice(tLast), color: baseColor, hot: false });
+      }
+    };
+
+    while ((match = ansiRegex.exec(rawSegment)) !== null) {
+      if (match.index > lastIdx) {
+        pushHighlightedChunk(rawSegment.slice(lastIdx, match.index), curColor);
+      }
+      const codes = (match[1] || "0").split(";").map(Number);
+      for (let i = 0; i < codes.length; i++) {
+        const c = codes[i];
+        if (c === 0) { curColor = null; bold = false; }
+        else if (c === 1) { bold = true; }
+        else if (ANSI_16[c]) { curColor = ANSI_16[c]; }
+        else if (c === 38 && codes[i + 1] === 5 && codes[i + 2] !== undefined) {
+          const n = codes[i + 2];
+          curColor = `hsl(${(n * 47) % 360}, 88%, 68%)`;
+          i += 2;
+        } else if (c === 38 && codes[i + 1] === 2 && codes[i + 4] !== undefined) {
+          curColor = `rgb(${codes[i + 2]},${codes[i + 3]},${codes[i + 4]})`;
+          i += 4;
+        }
+      }
+      lastIdx = match.index + match[0].length;
+    }
+    if (lastIdx < rawSegment.length) {
+      pushHighlightedChunk(rawSegment.slice(lastIdx), curColor);
+    }
+    return spans.length ? spans : [{ text: rawSegment, color: baseColor, hot: false }];
+  }
+
+  function formatTime(isoOrNow) {
+    const d = isoOrNow ? new Date(isoOrNow) : new Date();
+    if (Number.isNaN(d.getTime())) return new Date().toTimeString().slice(0, 8);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  }
+
+  function appendOrUpdateLine(rawLine, isoTime, replaceLast) {
+    const expanded = rawLine.replace(/\t/g, "  ");
+    const plain = expanded.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+    if (!plain.trim() && replaceLast) return;
+
+    const sem = classifySemanticLine(plain);
+    const spans = tokenizeSpans(expanded, sem.color);
+    const now = performance.now();
+    const entry = {
+      id: ++state.lineCounter,
+      ts: now,
+      timeStr: formatTime(isoTime),
+      raw: plain,
+      spans,
+      kind: sem.kind,
+      energy: sem.energy,
+    };
+
+    if (replaceLast && state.lines.length > 0) {
+      // Preserve gentle pulse without full white flash on rapid tqdm ticks
+      entry.ts = now - 110;
+      state.lines[state.lines.length - 1] = entry;
+    } else {
+      state.lines.push(entry);
+      state.linesThisSec++;
+      state.smoothScrollPx += state.fontSize * 1.38;
+      if (state.lines.length > MAX_LINES) {
+        state.lines.splice(0, state.lines.length - MAX_LINES);
+      }
+    }
+    feedSignalAnalyzer(plain, sem.energy);
+  }
+
+  function ingestLogChunk(text, isoTime) {
+    if (typeof text !== "string" || !text.length) return;
+    // Normalize CRLF -> LF, then handle standalone CR overwrites accurately
+    const norm = text.replace(/\r\n/g, "\n");
+    const newlineParts = norm.split("\n");
+
+    for (let i = 0; i < newlineParts.length; i++) {
+      const part = newlineParts[i];
+      const isTrailingEmptyAfterLf = (i === newlineParts.length - 1 && part === "");
+      if (isTrailingEmptyAfterLf) {
+        state.partialCrActive = false;
+        continue;
+      }
+
+      if (part.includes("\r")) {
+        const crSegments = part.split("\r");
+        for (let c = 0; c < crSegments.length; c++) {
+          const seg = crSegments[c];
+          if (seg === "" && c === 0) {
+            state.partialCrActive = true;
+            continue;
+          }
+          if (!seg) continue;
+          const shouldReplace = state.partialCrActive || c > 0;
+          appendOrUpdateLine(seg, isoTime, shouldReplace);
+          state.partialCrActive = true;
+        }
+      } else {
+        appendOrUpdateLine(part, isoTime, state.partialCrActive);
+        state.partialCrActive = false;
+      }
+
+      if (i < newlineParts.length - 1) {
+        state.partialCrActive = false;
+      }
+    }
+  }
+
+  // =========================================================================
+  // 4. COMFYUI LIVE WEBSOCKET + LOG SUBSCRIPTION + BROADCAST CHANNEL
+  // =========================================================================
+  let ws = null;
+  let reconnectTimer = null;
+
+  async function backfillAndSubscribeLogs() {
+    try {
+      const rawRes = await fetch("/internal/logs/raw", { cache: "no-store" });
+      if (rawRes.ok) {
+        const data = await rawRes.json();
+        if (Array.isArray(data?.entries) && state.lines.length <= 4) {
+          for (const item of data.entries) {
+            if (item && typeof item.m === "string") {
+              ingestLogChunk(item.m, item.t);
+            }
+          }
+          // Cool down historical backfill timestamps so initial screen doesn't flash all-white
+          const coolTs = performance.now() - 2000;
+          for (const l of state.lines) l.ts = coolTs;
+          state.smoothScrollPx = 0;
+          state.blastRate = 0.15;
+        }
+      }
+    } catch (_) { /* server might still be warming up */ }
+
+    try {
+      await fetch("/internal/logs/subscribe", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId: state.clientId, enabled: true }),
+      });
+    } catch (_) { /* ignore */ }
+  }
+
+  function connectComfySocket() {
+    clearTimeout(reconnectTimer);
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${proto}//${location.host}/ws?clientId=${encodeURIComponent(state.clientId)}`;
+
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (_) {
+      reconnectTimer = setTimeout(connectComfySocket, 2000);
+      return;
+    }
+
+    ws.addEventListener("open", () => {
+      state.wsConnected = true;
+      ingestLogChunk("[LogBlaster] Connected to ComfyUI live log + event stream (/ws)\n");
+      backfillAndSubscribeLogs();
+    });
+
+    ws.addEventListener("message", (ev) => {
+      if (typeof ev.data !== "string") return; // skip binary preview blobs
+      let msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch (_) {
+        return;
+      }
+      const { type, data } = msg;
+      if (type === "logs" && Array.isArray(data?.entries)) {
+        for (const entry of data.entries) {
+          if (entry && typeof entry.m === "string") {
+            ingestLogChunk(entry.m, entry.t);
+          }
+        }
+      } else if (type === "execution_start") {
+        state.runState = "BLASTING";
+        state.runStartMs = performance.now();
+        state.stepVal = 0;
+        state.stepMax = 0;
+        state.degaussWobble = 1.0;
+        state.flashPulse = 0.85;
+        triggerShockwave(0.5, 0.25);
+        ingestLogChunk(`[LogBlaster:SHOCKWAVE] >>> WORKFLOW EXECUTION STARTED (prompt ${String(data?.prompt_id || "").slice(0, 8)}) <<<\n`);
+      } else if (type === "executing") {
+        const nodeId = data?.node;
+        if (nodeId === null || nodeId === undefined) {
+          if (state.runState === "BLASTING") {
+            state.runState = "COMPLETE";
+            state.lastElapsedSec = (performance.now() - state.runStartMs) / 1000;
+            state.activeNodeTitle = "Workflow Complete";
+            state.flashPulse = 1.0;
+            triggerShockwave(0.5, 0.5);
+          }
+        } else {
+          state.runState = "BLASTING";
+          if (!state.runStartMs) state.runStartMs = performance.now();
+          state.activeNodeId = String(nodeId);
+          const knownTitle = state.nodeTitleMap.get(String(nodeId));
+          state.activeNodeTitle = knownTitle ? `${knownTitle} (#${nodeId})` : `Node #${nodeId}`;
+          state.nodePulse = 1.0;
+          state.stepVal = 0;
+          state.stepMax = 0;
+          triggerShockwave(0.2 + Math.random() * 0.6, 0.35 + Math.random() * 0.3);
+        }
+      } else if (type === "progress") {
+        const now = performance.now();
+        if (state.lastStepMs > 0 && data?.value > state.stepVal) {
+          const dt = (now - state.lastStepMs) / 1000;
+          if (dt > 0.005 && dt < 30) {
+            const instRate = (data.value - state.stepVal) / dt;
+            state.stepRateSmooth = state.stepRateSmooth > 0
+              ? state.stepRateSmooth * 0.7 + instRate * 0.3
+              : instRate;
+          }
+        }
+        state.lastStepMs = now;
+        state.stepVal = Number(data?.value || 0);
+        state.stepMax = Number(data?.max || 0);
+        state.stepPulse = 1.0;
+        state.runState = "BLASTING";
+      } else if (type === "execution_error") {
+        state.runState = "ERROR";
+        state.glitchBurst = 1.0;
+        const errNode = data?.node_type || data?.node_id || "unknown";
+        const errMsg = data?.exception_message || "Execution error";
+        ingestLogChunk(`[ERROR] Node ${errNode}: ${errMsg}\n`);
+      } else if (type === "execution_success") {
+        state.runState = "COMPLETE";
+        if (state.runStartMs) {
+          state.lastElapsedSec = (performance.now() - state.runStartMs) / 1000;
+        }
+        state.flashPulse = 1.0;
+        triggerShockwave(0.5, 0.5);
+      }
+    });
+
+    ws.addEventListener("close", () => {
+      state.wsConnected = false;
+      reconnectTimer = setTimeout(connectComfySocket, 2200);
+    });
+
+    ws.addEventListener("error", () => {
+      try { ws.close(); } catch (_) {}
+    });
+  }
+
+  // BroadcastChannel bridge with ComfyUI frontend extension (receives live node titles + heartbeat)
+  let bus = null;
+  try {
+    bus = new BroadcastChannel("comfy-logblaster-bus");
+    bus.addEventListener("message", (ev) => {
+      const m = ev.data;
+      if (!m || typeof m !== "object") return;
+      if (m.type === "ping") {
+        bus.postMessage({ type: "pong", ts: Date.now() });
+      } else if (m.type === "node_map" && m.nodes && typeof m.nodes === "object") {
+        for (const [id, title] of Object.entries(m.nodes)) {
+          state.nodeTitleMap.set(String(id), String(title));
+        }
+        if (state.activeNodeId && state.nodeTitleMap.has(state.activeNodeId)) {
+          state.activeNodeTitle = `${state.nodeTitleMap.get(state.activeNodeId)} (#${state.activeNodeId})`;
+        }
+      } else if (m.type === "wake") {
+        state.flashPulse = Math.max(state.flashPulse, 0.65);
+      }
+    });
+    setInterval(() => {
+      try { bus.postMessage({ type: "pong", ts: Date.now() }); } catch (_) {}
+    }, 1500);
+  } catch (_) {}
+
+  // Poll zero-overhead NVML GPU telemetry
+  async function pollTelemetry() {
+    try {
+      const res = await fetch("/logblaster/telemetry", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && typeof data === "object") {
+          state.gpuTelemetry = data;
+        }
+      }
+    } catch (_) {}
+  }
+  setInterval(pollTelemetry, 1000);
+  pollTelemetry();
+
+  // 1-second velocity counter rollup
+  setInterval(() => {
+    state.cpsDisplay = state.charsThisSec;
+    state.lpsDisplay = state.linesThisSec;
+    state.charsThisSec = 0;
+    state.linesThisSec = 0;
+  }, 1000);
+
+  // =========================================================================
+  // 5. SYNTHETIC "TEST BLAST" DEMO GENERATOR (HOTKEY: B)
+  // =========================================================================
+  let demoTimers = [];
+  function startTestBlast() {
+    demoTimers.forEach(clearTimeout);
+    demoTimers = [];
+
+    state.paused = false;
+    state.scrollBackLines = 0;
+    syncControlsUI();
+
+    state.runState = "BLASTING";
+    state.runStartMs = performance.now();
+    state.degaussWobble = 1.0;
+    state.flashPulse = 0.9;
+    triggerShockwave(0.5, 0.35);
+
+    const script = [
+      [0,    "[LogBlaster:SHOCKWAVE] >>> SYNTHETIC GPU SHADER TEST BLAST INITIATED <<<\n"],
+      [90,   "[launch] production seeds: fresh OS entropy per episode | CUDA_MALLOC=async\n"],
+      [180,  "[ComfyUI] Requested to load FluxClipModel_ & LTXVTransformer3D (11.42 GiB VRAM)\n"],
+      [310,  "[OldTimeRadio] Stage 1/4: LedgerScriptWriter -> casting 4 voices, 14 beats @ 48000 Hz\n"],
+      [450,  "  Beat 01 [NARRATOR]  \"Static hums across the Ionian relay at 0300 UTC...\" (42.8 tok/s)\n"],
+      [570,  "  Beat 02 [CDR. VANCE] \"Hold the carrier wave! Something is modulating the telemetry!\" (46.1 tok/s)\n"],
+      [690,  "  Beat 03 [DR. CHEN]   \"Look at the spectral flatness: 0.156 -- that's structured signal!\" (47.4 tok/s)\n"],
+      [840,  "[KokoroTTS] Synthesizing 14 dialogue stems (fp16) -> 48kHz broadcast master\n"],
+    ];
+
+    // Add rapid tqdm carriage-return progress updates
+    for (let s = 1; s <= 14; s++) {
+      const pct = Math.round((s / 14) * 100);
+      const filled = Math.round((s / 14) * 22);
+      const bar = "█".repeat(filled) + "░".repeat(22 - filled);
+      script.push([
+        860 + s * 65,
+        `\rTTS Synth: ${String(pct).padStart(3, " ")}%|${bar}| ${s}/14 [00:0${Math.floor(s / 3)}<00:01, 15.4stems/s]`,
+        { step: s, max: 14, node: "KokoroTTS_Batch (#18)" },
+      ]);
+    }
+    script.push([1820, "\n[OldTimeRadio] Audio LUFS check: -16.1 LUFS, true-peak -1.2 dBTP [PASS]\n"]);
+    script.push([1960, "[LTX-Video] Stage 3/4: Two-stage IA2V latent diffusion (768x512 -> 1536x1024, 121 frames)\n", { shock: true, node: "OTR_VideoRenderBatch (#74)" }]);
+
+    for (let s = 1; s <= 24; s++) {
+      const pct = Math.round((s / 24) * 100);
+      const filled = Math.round((s / 24) * 26);
+      const bar = "█".repeat(filled) + "░".repeat(26 - filled);
+      const rate = (5.8 + Math.sin(s * 0.5) * 0.4).toFixed(2);
+      script.push([
+        2000 + s * 85,
+        `\rDiffusion: ${String(pct).padStart(3, " ")}%|${bar}| ${s}/24 [00:${String(s).padStart(2, "0")}<00:${String(24 - s).padStart(2, "0")}, ${rate}it/s, vram=14120MiB]`,
+        { step: s, max: 24, node: "OTR_VideoRenderBatch (#74)" },
+      ]);
+    }
+    script.push([4120, "\n[WARNING] Transient high-frequency transient clamped at frame 97 (+0.3 dB headroom guard)\n"]);
+    script.push([4280, "[VideoHelperSuite] Muxing H.264 High@L4.2 + 48kHz PCM -> otr/obs/episode_final.mp4\n", { shock: true, node: "OTR_ObsPublish (#92)" }]);
+    script.push([4520, "[OldTimeRadio] obs_publish OK -> verified deliverable on disk (121 frames, 0 dropped)\n"]);
+    script.push([4680, "Prompt executed in 00:04.68 === COMPLETE ===\n", { complete: true }]);
+
+    for (const [delay, text, meta] of script) {
+      const t = setTimeout(() => {
+        if (meta?.node) {
+          if (state.activeNodeTitle !== meta.node) state.nodePulse = 1.0;
+          state.activeNodeTitle = meta.node;
+        }
+        if (meta?.shock) triggerShockwave(0.35 + Math.random() * 0.3, 0.45);
+        if (meta?.step) {
+          state.stepVal = meta.step;
+          state.stepMax = meta.max;
+          state.stepPulse = 1.0;
+          state.stepRateSmooth = 11.8;
+        }
+        if (meta?.complete) {
+          state.runState = "COMPLETE";
+          state.lastElapsedSec = 4.68;
+          state.activeNodeTitle = "Demo Blast Complete";
+        }
+        ingestLogChunk(text);
+      }, delay);
+      demoTimers.push(t);
+    }
+  }
+
+  document.getElementById("btnTestBlast").addEventListener("click", startTestBlast);
+
+  // =========================================================================
+  // 6. OFFSCREEN HIGH-DPI 2D LOG TEXT + SPECTRUM CANVAS (TRANSPARENT ALPHA!)
+  // =========================================================================
+  const textCanvas = document.createElement("canvas");
+  const ctx = textCanvas.getContext("2d", { alpha: true });
+
+  function getPaletteColors() {
+    // When tintMode > 0, remap text palette to classic monochrome phosphor tube
+    if (state.tintMode === 1) {
+      return { primary: "#ffb627", bright: "#fff1b8", dim: "#b87400", accent: "#ffd166" };
+    }
+    if (state.tintMode === 2) {
+      return { primary: "#33ff66", bright: "#d4ffe0", dim: "#19993c", accent: "#7dff9e" };
+    }
+    if (state.tintMode === 3) {
+      return { primary: "#45eaff", bright: "#e0fbff", dim: "#1b8ca3", accent: "#94f5ff" };
+    }
+    // AUTO per preset
+    if (state.preset === 2) {
+      // Vintage Radio Oscilloscope defaults to vector cathode teal-green with warm copper labels
+      return { primary: null, bright: "#e6fff5", dim: "#3ca382", accent: "#38ffb3", headerAccent: "#ffb347" };
+    }
+    return { primary: null, bright: "#ffffff", dim: "#6c8ea3", accent: "#4df3ff", headerAccent: "#4df3ff" };
+  }
+
+  function renderTextTexture(nowMs, dtSec) {
+    const w = textCanvas.width;
+    const h = textCanvas.height;
+    const dpr = textCanvas._dpr || 1;
+
+    // CRITICAL: clear to transparent (rgba 0,0,0,0) so WebGL2 fragment shaders
+    // have an exact glyph alpha mask (texel.a > 0 ONLY on characters & HUD traces)!
+    ctx.clearRect(0, 0, w, h);
+    ctx.save();
+    ctx.scale(dpr, dpr);
+
+    const vw = w / dpr;
+    const vh = h / dpr;
+    const pal = getPaletteColors();
+    const accent = pal.headerAccent || pal.accent;
+
+    // --- TOP TELEMETRY & LIVE SPECTRUM DECK ---
+    const headerH = 92;
+    const padX = 20;
+
+    // Crisp vector divider lines (processed through the CRT/Glitch/Scope shaders!)
+    ctx.strokeStyle = pal.primary || "rgba(77, 243, 255, 0.45)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(padX, headerH);
+    ctx.lineTo(vw - padX, headerH);
+    ctx.stroke();
+
+    // Left block: Title + Status Badge + Active Node + Progress Bar
+    ctx.font = "bold 13px 'Cascadia Mono', 'Consolas', monospace";
+    ctx.fillStyle = pal.bright;
+    ctx.fillText("COMFYUI // LOG BLASTER", padX, 22);
+
+    const statusColors = {
+      IDLE: "#7a9bb0",
+      BLASTING: "#38ffb3",
+      COMPLETE: "#4df3ff",
+      ERROR: "#ff3e6c",
+    };
+    const badgeColor = pal.primary || statusColors[state.runState] || "#4df3ff";
+    const wsTag = state.wsConnected ? state.runState : "RECONNECTING";
+    ctx.fillStyle = badgeColor;
+    ctx.fillText(`[${wsTag}]`, padX + 196, 22);
+
+    // Active node + elapsed timer
+    const elapsed = state.runState === "BLASTING" && state.runStartMs
+      ? ((nowMs - state.runStartMs) / 1000).toFixed(1) + "s"
+      : (state.lastElapsedSec > 0 ? state.lastElapsedSec.toFixed(1) + "s" : "0.0s");
+    ctx.font = "12px 'Cascadia Mono', 'Consolas', monospace";
+    ctx.fillStyle = pal.primary || "#bfe8ff";
+    const nodeText = `NODE: ${state.activeNodeTitle}`.slice(0, 46);
+    ctx.fillText(nodeText, padX, 44);
+
+    // Step progress bar
+    const barW = Math.min(310, vw * 0.27);
+    const barY = 56;
+    const barH = 11;
+    ctx.strokeStyle = pal.dim;
+    ctx.strokeRect(padX, barY, barW, barH);
+    const pct = state.stepMax > 0 ? Math.min(1, state.stepVal / state.stepMax) : (state.runState === "BLASTING" ? 0.15 + 0.1 * Math.sin(nowMs * 0.008) : 0);
+    if (pct > 0) {
+      ctx.fillStyle = pal.primary || "#4dffcb";
+      ctx.fillRect(padX + 2, barY + 2, Math.max(2, (barW - 4) * pct), barH - 4);
+    }
+    ctx.font = "11px 'Cascadia Mono', 'Consolas', monospace";
+    ctx.fillStyle = pal.dim;
+    const stepStr = state.stepMax > 0
+      ? `${state.stepVal}/${state.stepMax} (${Math.round(pct * 100)}%)  ${state.stepRateSmooth > 0 ? state.stepRateSmooth.toFixed(1) + " it/s" : ""}  T+${elapsed}`
+      : `T+${elapsed}  |  ${state.lpsDisplay} lines/s  ${state.cpsDisplay} chars/s`;
+    ctx.fillText(stepStr, padX, 82);
+
+    // Center block: 48-Band Live Character-Entropy Spectrum + Oscilloscope Trace
+    const specLeft = Math.max(365, vw * 0.34);
+    const specRight = Math.min(vw - 290, vw * 0.69);
+    const specW = specRight - specLeft;
+    if (specW > 120) {
+      const binW = specW / SPECTRUM_BINS;
+      const baseY = 76;
+      const maxBarH = 54;
+
+      for (let i = 0; i < SPECTRUM_BINS; i++) {
+        // Decay spectrum smoothly
+        state.spectrum[i] = Math.max(0.03, state.spectrum[i] - dtSec * 1.85);
+        if (state.spectrum[i] > state.spectrumPeak[i]) {
+          state.spectrumPeak[i] = state.spectrum[i];
+        } else {
+          state.spectrumPeak[i] = Math.max(0.03, state.spectrumPeak[i] - dtSec * 0.75);
+        }
+
+        const val = Math.min(1.0, state.spectrum[i]);
+        const bh = Math.max(2, val * maxBarH);
+        const bx = specLeft + i * binW;
+
+        if (pal.primary) {
+          ctx.fillStyle = val > 0.72 ? pal.bright : pal.primary;
+        } else {
+          const hue = 175 + (i / SPECTRUM_BINS) * 145;
+          ctx.fillStyle = val > 0.78 ? "#ffffff" : `hsl(${hue}, 95%, 62%)`;
+        }
+        ctx.fillRect(bx + 0.5, baseY - bh, Math.max(1.5, binW - 1.6), bh);
+
+        // Peak hold cap
+        const peakY = baseY - Math.min(1.0, state.spectrumPeak[i]) * maxBarH - 2;
+        ctx.fillStyle = pal.bright;
+        ctx.fillRect(bx + 0.5, peakY, Math.max(1.5, binW - 1.6), 1.6);
+      }
+
+      // Overlay live log-character waveform ribbon across top of spectrum
+      ctx.strokeStyle = pal.bright;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (let s = 0; s < WAVE_SAMPLES; s++) {
+        const idx = (state.waveWriteIdx + s) % WAVE_SAMPLES;
+        const wx = specLeft + (s / (WAVE_SAMPLES - 1)) * specW;
+        const wy = 24 + state.waveform[idx] * 14;
+        if (s === 0) ctx.moveTo(wx, wy);
+        else ctx.lineTo(wx, wy);
+      }
+      ctx.stroke();
+
+      ctx.font = "10px 'Cascadia Mono', 'Consolas', monospace";
+      ctx.fillStyle = pal.dim;
+      ctx.fillText("LOG TOKEN SPECTRUM // LIVE STREAM ENTROPY", specLeft, 87);
+    }
+
+    // Right block: Live RTX 5080 Telemetry + Active Shader GPU Proof
+    const rightX = vw - padX - 258;
+    if (rightX > 360) {
+      const gt = state.gpuTelemetry;
+      const shortGpu = (gt.gpu_name || "GPU")
+        .replace("NVIDIA GeForce ", "")
+        .replace(" Laptop GPU", "")
+        .slice(0, 24);
+
+      ctx.font = "bold 11px 'Cascadia Mono', 'Consolas', monospace";
+      ctx.fillStyle = accent;
+      ctx.fillText(`COMPUTE: ${shortGpu}`, rightX, 20);
+
+      if (gt.available && gt.vram_total_mib > 0) {
+        const vramPct = Math.min(1, gt.vram_used_mib / gt.vram_total_mib);
+        const vramGib = (gt.vram_used_mib / 1024).toFixed(1);
+        const totGib = (gt.vram_total_mib / 1024).toFixed(1);
+
+        ctx.font = "11px 'Cascadia Mono', 'Consolas', monospace";
+        ctx.fillStyle = pal.primary || "#d2f0ff";
+        ctx.fillText(`GPU ${String(gt.gpu_util).padStart(3, " ")}% | VRAM ${vramGib}/${totGib}G`, rightX, 38);
+        ctx.fillText(`TMP  ${String(gt.temp_c).padStart(2, " ")}C | PWR ${gt.power_w}W`, rightX, 54);
+
+        // Mini dual gauge bars
+        const gw = 250;
+        ctx.fillStyle = "rgba(120, 170, 195, 0.24)";
+        ctx.fillRect(rightX, 60, gw, 5);
+        ctx.fillStyle = pal.primary || (vramPct > 0.9 ? "#ff4d6d" : "#4df3ff");
+        ctx.fillRect(rightX, 60, gw * vramPct, 5);
+      } else {
+        ctx.font = "11px 'Cascadia Mono', 'Consolas', monospace";
+        ctx.fillStyle = pal.dim;
+        ctx.fillText("NVML TELEMETRY STANDBY", rightX, 40);
+      }
+
+      ctx.font = "10px 'Cascadia Mono', 'Consolas', monospace";
+      ctx.fillStyle = pal.dim;
+      const fxGpuShort = state.shaderRendererName.slice(0, 27);
+      ctx.fillText(`FX GPU: ${fxGpuShort} (${state.fps}fps)`, rightX, 82);
+    }
+
+    // --- MAIN BLASTING LOG TEXT VIEWPORT ---
+    const logTop = headerH + 10;
+    const logBottom = vh - 16;
+    const availH = Math.max(60, logBottom - logTop);
+    const fs = state.fontSize;
+    const lineH = Math.round(fs * 1.42);
+    const visibleCount = Math.max(3, Math.floor(availH / lineH));
+
+    // Smooth sub-line kinetic scroll decay
+    state.smoothScrollPx *= Math.pow(0.0008, dtSec);
+    if (state.smoothScrollPx < 0.35 || state.paused) state.smoothScrollPx = 0;
+
+    ctx.beginPath();
+    ctx.rect(0, logTop, vw, availH + 6);
+    ctx.clip();
+
+    const total = state.lines.length;
+    const endIdx = Math.max(0, total - state.scrollBackLines);
+    const startIdx = Math.max(0, endIdx - visibleCount - 1);
+
+    ctx.font = `${fs}px 'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace`;
+    ctx.textBaseline = "alphabetic";
+
+    const timeW = fs * 6.2;
+    const textStartX = padX + 10 + timeW;
+
+    for (let i = startIdx; i < endIdx; i++) {
+      const line = state.lines[i];
+      const rowFromBottom = (endIdx - 1) - i;
+      const y = logBottom - 6 - rowFromBottom * lineH + state.smoothScrollPx;
+      if (y < logTop - lineH || y > logBottom + lineH) continue;
+
+      const ageMs = Math.max(0, nowMs - line.ts);
+      // Fresh log lines ignite white-hot for 280ms so the GPU bloom shader flares on impact!
+      const birthFlash = ageMs < 280 ? Math.pow(1.0 - ageMs / 280, 1.7) : 0.0;
+
+      // Left energy gutter bar
+      if (line.kind !== "normal" || birthFlash > 0.25) {
+        const gutterColor = pal.primary || (
+          line.kind === "error" ? "#ff3860" :
+          line.kind === "warn" ? "#ffc845" :
+          line.kind === "complete" || line.kind === "shock" ? "#38ffb3" :
+          "#4df3ff"
+        );
+        ctx.fillStyle = birthFlash > 0.45 ? "#ffffff" : gutterColor;
+        ctx.fillRect(padX, y - fs + 2, 3.5, fs + 1);
+      }
+
+      // Timestamp
+      ctx.fillStyle = birthFlash > 0.55 ? pal.bright : pal.dim;
+      ctx.fillText(line.timeStr, padX + 8, y);
+
+      // Colored spans
+      let curX = textStartX;
+      for (let s = 0; s < line.spans.length; s++) {
+        const sp = line.spans[s];
+        if (!sp.text) continue;
+        if (curX > vw - padX) break;
+
+        if (birthFlash > 0.38) {
+          ctx.fillStyle = "#ffffff";
+        } else if (pal.primary) {
+          ctx.fillStyle = sp.hot ? pal.bright : pal.primary;
+        } else {
+          ctx.fillStyle = sp.color;
+        }
+
+        if (sp.hot || birthFlash > 0.2) {
+          ctx.font = `bold ${fs}px 'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace`;
+        } else {
+          ctx.font = `${fs}px 'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace`;
+        }
+
+        ctx.fillText(sp.text, curX, y);
+        curX += ctx.measureText(sp.text).width;
+      }
+
+      // Leading cathode beam spark on freshly blasted lines
+      if (birthFlash > 0.15 && curX < vw - padX) {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(Math.min(vw - padX - 12, curX + 4), y - fs + 3, 8 * birthFlash, fs - 1);
+      }
+    }
+
+    // Pulsing terminal block cursor at live stream tail
+    if (!state.paused && Math.sin(nowMs * 0.011) > -0.2) {
+      ctx.fillStyle = pal.bright;
+      ctx.fillRect(padX + 8, logBottom - 2, fs * 0.65, 3);
+    }
+
+    ctx.restore();
+  }
+
+  // =========================================================================
+  // 7. WEBGL2 2-PASS GPU SHADER ENGINE (PING-PONG FEEDBACK + 4 PRESETS)
+  // =========================================================================
+  const glCanvas = document.getElementById("glCanvas");
+  const gl = glCanvas.getContext("webgl2", {
+    // Prefer low-power integrated GPU (Intel Graphics) so RTX 5080 keeps 100% VRAM & CUDA!
+    powerPreference: preferHighGpu ? "high-performance" : "low-power",
+    alpha: false,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    preserveDrawingBuffer: false,
+  });
+
+  if (!gl) {
+    // Graceful 2D fallback if WebGL2 is disabled
+    document.body.appendChild(textCanvas);
+    textCanvas.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;";
+  } else {
+    try {
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      if (dbg) {
+        const rawRenderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
+        // Extract clean GPU name from ANGLE (...) string
+        const m = rawRenderer.match(/ANGLE \([^,]+,\s*([^,(]+)/i);
+        state.shaderRendererName = (m ? m[1] : rawRenderer).replace(/Direct3D11.*$/i, "").trim() || "WebGL2 GPU";
+      }
+    } catch (_) {}
+  }
+
+  const VERT_SRC = `#version 300 es
+precision highp float;
+out vec2 v_uv;
+void main() {
+  // Fullscreen triangle (3 vertices, zero VBO needed)
+  vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  v_uv = pos;
+  gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+}
+`;
+
+  // PASS 1: Temporal GPU Feedback Shader (Phosphor Persistence + Matrix Character Drip + Zoom Trails)
+  const FEEDBACK_FRAG = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform sampler2D u_textTex;
+uniform sampler2D u_prevTex;
+uniform vec2 u_res;
+uniform float u_time;
+uniform int u_preset;
+uniform float u_fx;
+uniform float u_blastRate;
+
+float hash11(float p) {
+  p = fract(p * 0.1031);
+  p *= p + 33.33;
+  p *= p + p;
+  return fract(p);
+}
+
+void main() {
+  vec4 live = texture(u_textTex, v_uv);
+  float fx = clamp(u_fx, 0.0, 1.6);
+
+  if (fx < 0.02) {
+    fragColor = vec4(live.rgb * live.a, live.a);
+    return;
+  }
+
+  vec3 trail = vec3(0.0);
+
+  if (u_preset == 0) {
+    // PRESET 1: RETRO CRT PHOSPHOR PERSISTENCE
+    vec3 prev = texture(u_prevTex, v_uv).rgb;
+    float decay = mix(0.35, 0.76, clamp(fx, 0.0, 1.2));
+    trail = prev * decay;
+    vec3 currentLit = live.rgb * live.a;
+    fragColor = vec4(max(trail, currentLit), live.a);
+  } else if (u_preset == 1) {
+    // PRESET 2: CYBERPUNK GLITCH // MATRIX CHARACTER WAKE DRIP
+    // Sample slightly ABOVE current pixel so trails drip DOWNWARD from real log characters!
+    float colId = floor(v_uv.x * (u_res.x / 9.0));
+    float colSpeed = (0.0022 + 0.0045 * hash11(colId + 7.13)) * (0.7 + u_blastRate * 0.7) * fx;
+    vec2 dripUv = vec2(v_uv.x, min(0.999, v_uv.y + colSpeed));
+
+    vec3 prevDrip = texture(u_prevTex, dripUv).rgb;
+    vec4 srcAbove = texture(u_textTex, dripUv);
+
+    // Shimmering digital rain modulation per column
+    float rainPulse = 0.84 + 0.16 * sin(u_time * 9.0 + colId * 3.7 + v_uv.y * 45.0);
+    vec3 matrixTint = mix(vec3(0.10, 1.0, 0.58), vec3(0.25, 0.92, 1.0), hash11(colId * 3.1));
+
+    vec3 spawnedWake = srcAbove.rgb * srcAbove.a * matrixTint * 0.52 * clamp(fx, 0.0, 1.3);
+    trail = max(prevDrip * 0.875 * rainPulse, spawnedWake);
+    vec3 currentLit = live.rgb * live.a;
+    fragColor = vec4(max(trail * 0.88, currentLit), live.a);
+  } else if (u_preset == 2) {
+    // PRESET 3: VINTAGE RADIO OSCILLOSCOPE (P7 DUAL-STAGE RADAR PHOSPHOR)
+    vec3 prev = texture(u_prevTex, v_uv).rgb;
+    // Blue-white flash decays fast; emerald-green P7 phosphor lingers longer
+    vec3 p7Decay = vec3(0.58, 0.84, 0.72) * clamp(0.65 + 0.22 * fx, 0.0, 0.91);
+    trail = prev * p7Decay;
+    vec3 currentLit = live.rgb * live.a;
+    fragColor = vec4(max(trail, currentLit), live.a);
+  } else {
+    // PRESET 4: ARCADE NEON // RADIAL ZOOM LIGHT-STREAK ECHO
+    vec2 center = vec2(0.5, 0.5);
+    float zoomAmt = (0.0025 + 0.005 * clamp(u_blastRate, 0.0, 1.2)) * fx;
+    vec2 zoomUv = center + (v_uv - center) * (1.0 - zoomAmt);
+    vec3 prevZoom = texture(u_prevTex, clamp(zoomUv, vec2(0.001), vec2(0.999))).rgb;
+    vec3 neonShift = vec3(prevZoom.r * 0.84, prevZoom.g * 0.72, prevZoom.b * 0.88);
+    vec3 currentLit = live.rgb * live.a;
+    fragColor = vec4(max(neonShift, currentLit), live.a);
+  }
+}
+`;
+
+  // PASS 2: Final GPU Composite Shader (CRT Warp, Bloom, Glitch Tear, Scope Beam, Shockwave Refraction)
+  const COMPOSITE_FRAG = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform sampler2D u_textTex;
+uniform sampler2D u_feedbackTex;
+uniform vec2 u_res;
+uniform float u_time;
+uniform int u_preset;
+uniform float u_fx;
+uniform float u_blastRate;
+uniform float u_stepPulse;
+uniform float u_nodePulse;
+uniform float u_glitchBurst;
+uniform float u_flashPulse;
+uniform float u_degauss;
+uniform float u_shockTime;
+uniform vec2 u_shockCenter;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+vec2 barrelWarp(vec2 uv, float amount) {
+  vec2 cc = uv * 2.0 - 1.0;
+  float r2 = dot(cc, cc);
+  cc *= 1.0 + amount * r2 + (amount * 0.35) * r2 * r2;
+  return cc * 0.5 + 0.5;
+}
+
+// 9-Tap Multi-Radius HDR Phosphor Bloom directly around bright log text characters
+vec3 sampleBloom(sampler2D tex, vec2 uv, vec2 px, float radius) {
+  vec3 acc = vec3(0.0);
+  vec2 r1 = px * radius;
+  vec2 r2 = px * radius * 2.35;
+
+  acc += texture(tex, uv + vec2( r1.x,  0.0)).rgb * 0.16;
+  acc += texture(tex, uv + vec2(-r1.x,  0.0)).rgb * 0.16;
+  acc += texture(tex, uv + vec2( 0.0,  r1.y)).rgb * 0.16;
+  acc += texture(tex, uv + vec2( 0.0, -r1.y)).rgb * 0.16;
+
+  acc += texture(tex, uv + vec2( r2.x,  r2.y)).rgb * 0.09;
+  acc += texture(tex, uv + vec2(-r2.x,  r2.y)).rgb * 0.09;
+  acc += texture(tex, uv + vec2( r2.x, -r2.y)).rgb * 0.09;
+  acc += texture(tex, uv + vec2(-r2.x, -r2.y)).rgb * 0.09;
+  return acc;
+}
+
+void main() {
+  float fx = clamp(u_fx, 0.0, 1.6);
+  vec2 px = 1.0 / max(u_res, vec2(1.0));
+  vec2 uv = v_uv;
+
+  // --- CRT / CABINET CURVATURE + DEGAUSS SHAKE ---
+  float warpStrength = 0.0;
+  if (u_preset == 0) warpStrength = 0.075 * min(fx, 1.25);
+  else if (u_preset == 2) warpStrength = 0.045 * min(fx, 1.2);
+  else if (u_preset == 3) warpStrength = 0.055 * min(fx, 1.2);
+
+  if (u_degauss > 0.01 && fx > 0.05) {
+    float wob = sin(u_time * 42.0 + uv.y * 12.0) * 0.014 * u_degauss * fx;
+    uv.x += wob;
+    uv.y += cos(u_time * 35.0) * 0.006 * u_degauss * fx;
+  }
+
+  if (warpStrength > 0.0005) {
+    uv = barrelWarp(uv, warpStrength);
+  }
+
+  // Outside curved CRT bezel -> sleek dark glass frame
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    float bezelDist = max(max(-uv.x, uv.x - 1.0), max(-uv.y, uv.y - 1.0));
+    vec3 bezel = vec3(0.015, 0.02, 0.028) * exp(-bezelDist * 45.0);
+    fragColor = vec4(bezel, 1.0);
+    return;
+  }
+
+  // --- RADIAL SHOCKWAVE REFRACTION ON LOG TEXT (Node switches / Completion / Preset 4) ---
+  float shockAge = u_time - u_shockTime;
+  float shockRing = 0.0;
+  if (shockAge >= 0.0 && shockAge < 1.35 && fx > 0.05) {
+    vec2 aspect = vec2(u_res.x / max(u_res.y, 1.0), 1.0);
+    vec2 delta = (uv - u_shockCenter) * aspect;
+    float dist = length(delta);
+    float radius = shockAge * 1.15;
+    float band = exp(-pow((dist - radius) * 26.0, 2.0)) * (1.0 - shockAge / 1.35);
+    shockRing = band;
+    float refractScale = (u_preset == 3 ? 0.026 : 0.012) * fx;
+    vec2 dir = dist > 0.0001 ? normalize(delta) : vec2(0.0);
+    uv -= (dir / aspect) * band * refractScale;
+  }
+
+  // --- PRESET-SPECIFIC UV DISPLACEMENT DIRECTLY ON LOG CHARACTERS ---
+  float sliceGlitch = 0.0;
+  if (u_preset == 1 && fx > 0.05) {
+    // CYBERPUNK GLITCH: velocity + node/error driven horizontal scanband tearing on log text!
+    float activity = clamp(u_blastRate * 0.45 + u_nodePulse * 0.9 + u_glitchBurst * 1.4, 0.0, 1.8);
+    float bandY = floor(uv.y * 34.0 + floor(u_time * 18.0));
+    float rnd = hash12(vec2(bandY, floor(u_time * 22.0)));
+    float threshold = 0.965 - 0.14 * activity * min(fx, 1.4);
+    if (rnd > threshold) {
+      sliceGlitch = (hash12(vec2(bandY * 1.7, u_time)) - 0.5) * 0.055 * fx * (0.4 + activity);
+      uv.x = clamp(uv.x + sliceGlitch, 0.001, 0.999);
+    }
+  } else if (u_preset == 2 && fx > 0.05) {
+    // VINTAGE RADIO OSCILLOSCOPE: magnetic electron-beam deflection on log lines!
+    float carrier = sin(uv.y * 55.0 - u_time * 7.5) * cos(uv.y * 19.0 + u_time * 4.2);
+    float energy = (0.0007 + 0.0024 * clamp(u_blastRate, 0.0, 1.2) + 0.0025 * u_stepPulse) * fx;
+    uv.x = clamp(uv.x + carrier * energy, 0.001, 0.999);
+  } else if (u_glitchBurst > 0.05 && fx > 0.05) {
+    // Error glitch shake across any preset
+    float bandY = floor(uv.y * 28.0);
+    float rnd = hash12(vec2(bandY, floor(u_time * 30.0)));
+    if (rnd > 0.82) {
+      uv.x = clamp(uv.x + (rnd - 0.9) * 0.08 * u_glitchBurst * fx, 0.001, 0.999);
+    }
+  }
+
+  // --- CHROMATIC ABERRATION & CRISP GLYPH SAMPLING ---
+  float chromaPx = 0.0;
+  if (u_preset == 0) {
+    // Subtle corner convergence drift on curved CRT edges
+    float edge = length(uv - 0.5) * 1.5;
+    chromaPx = (0.8 + 1.8 * edge) * fx;
+  } else if (u_preset == 1) {
+    chromaPx = (1.8 + 4.5 * clamp(u_blastRate, 0.0, 1.2) + 9.0 * abs(sliceGlitch) * 20.0 + 7.0 * u_glitchBurst) * fx;
+  } else if (u_preset == 2) {
+    chromaPx = (0.6 + 2.2 * u_stepPulse) * fx;
+  } else {
+    chromaPx = (1.5 + 8.0 * shockRing + 3.5 * u_nodePulse) * fx;
+  }
+
+  vec2 cOff = vec2(px.x * chromaPx, 0.0);
+  vec4 tL = texture(u_textTex, clamp(uv + cOff, vec2(0.0), vec2(1.0)));
+  vec4 tC = texture(u_textTex, uv);
+  vec4 tR = texture(u_textTex, clamp(uv - cOff, vec2(0.0), vec2(1.0)));
+
+  vec3 crispGlyph = vec3(tL.r * tL.a, tC.g * tC.a, tR.b * tR.a);
+  float glyphMask = max(tC.a, max(tL.a, tR.a));
+
+  // Sample temporal feedback trails + multi-tap phosphor bloom
+  vec3 trail = texture(u_feedbackTex, uv).rgb;
+  float bloomRad = (u_preset == 3 ? 2.8 : (u_preset == 0 ? 2.4 : 2.1)) * (0.6 + 0.6 * fx);
+  vec3 bloom = sampleBloom(u_feedbackTex, uv, px, bloomRad) * (0.65 + 0.65 * fx);
+
+  // --- PROCEDURAL GPU BACKGROUNDS PER PRESET ---
+  vec3 bg = vec3(0.015, 0.022, 0.032);
+
+  if (u_preset == 0) {
+    // PRESET 1: Warm dark cathode glass + rolling 60Hz AC hum bar
+    float hum = 0.5 + 0.5 * sin(uv.y * 6.2831 - u_time * 1.9);
+    bg = vec3(0.016, 0.020, 0.026) + vec3(0.008, 0.012, 0.015) * pow(hum, 4.0) * fx;
+  } else if (u_preset == 1) {
+    // PRESET 2: Cyber dark grid + active data scan laser
+    vec2 grid = abs(fract(uv * vec2(48.0, 28.0)) - 0.5);
+    float gLine = smoothstep(0.48, 0.5, max(grid.x, grid.y));
+    float laser = exp(-abs(uv.y - fract(-u_time * 0.18)) * 55.0);
+    bg = vec3(0.010, 0.016, 0.024) + vec3(0.0, 0.045, 0.055) * gLine * min(fx, 1.0);
+    bg += vec3(0.02, 0.10, 0.12) * laser * min(fx, 1.2);
+  } else if (u_preset == 2) {
+    // PRESET 3: VINTAGE RADIO OSCILLOSCOPE — Etched Tektronix graticule + live carrier wave!
+    bg = vec3(0.008, 0.030, 0.022);
+    vec2 div = uv * vec2(10.0, 8.0);
+    vec2 fDiv = abs(fract(div) - 0.5);
+    float majorGrid = 1.0 - smoothstep(0.0, 0.022, min(fDiv.x, fDiv.y));
+    vec2 subDiv = abs(fract(div * 5.0) - 0.5);
+    float centerAxes = (abs(uv.x - 0.5) < 0.008 || abs(uv.y - 0.5) < 0.01) ? 1.0 : 0.0;
+    float minorTicks = (1.0 - smoothstep(0.0, 0.06, min(subDiv.x, subDiv.y))) * centerAxes;
+
+    // Illuminated amber-copper / emerald etched scope graticule
+    vec3 gratColor = mix(vec3(0.04, 0.16, 0.11), vec3(0.24, 0.15, 0.05), 0.45);
+    bg += gratColor * (majorGrid * 0.55 + minorTicks * 0.75) * min(fx, 1.2);
+
+    // Live vector oscilloscope carrier wave weaving across screen mid-plane
+    float amp = (0.028 + 0.075 * clamp(u_blastRate, 0.0, 1.2) + 0.05 * u_stepPulse) * min(fx, 1.3);
+    float waveY = 0.46
+      + sin(uv.x * 18.0 - u_time * 6.5) * amp
+      + sin(uv.x * 43.0 + u_time * 11.2) * (amp * 0.42)
+      + cos(uv.x * 7.0 - u_time * 2.8) * (amp * 0.35);
+    float beamDist = abs(uv.y - waveY);
+    float scopeCore = exp(-beamDist * 260.0);
+    float scopeHalo = exp(-beamDist * 38.0) * 0.25;
+    bg += (vec3(0.55, 1.0, 0.82) * scopeCore * 0.42 + vec3(0.08, 0.65, 0.42) * scopeHalo) * min(fx, 1.3);
+  } else {
+    // PRESET 4: ARCADE NEON — 3D receding synthwave vector horizon grid + sunset glow
+    bg = mix(vec3(0.025, 0.008, 0.048), vec3(0.008, 0.020, 0.045), uv.y);
+    if (uv.y < 0.36 && fx > 0.05) {
+      float py = max(0.015, 0.36 - uv.y);
+      float z = 0.14 / py;
+      float xProj = (uv.x - 0.5) * z * 2.4;
+      float gx = 1.0 - smoothstep(0.0, 0.06, abs(fract(xProj) - 0.5));
+      float gz = 1.0 - smoothstep(0.0, 0.07, abs(fract(z - u_time * (0.8 + u_blastRate)) - 0.5));
+      float fade = smoothstep(0.36, 0.02, uv.y);
+      bg += vec3(0.45, 0.06, 0.38) * max(gx, gz) * fade * 0.42 * min(fx, 1.2);
+    }
+  }
+
+  // --- COMBINE BACKGROUND + TRAILS + BLOOM + CRISP LOG CHARACTERS ---
+  vec3 col = bg + trail * 0.55 + bloom;
+
+  if (u_preset == 3 && fx > 0.1) {
+    // Arcade Neon plasma highlight tinting on bright characters
+    vec3 neonGrad = mix(vec3(1.0, 0.38, 0.82), vec3(0.35, 0.96, 1.0), fract(uv.y * 2.2 - u_time * 0.25));
+    float luma = dot(crispGlyph, vec3(0.299, 0.587, 0.114));
+    crispGlyph = mix(crispGlyph, crispGlyph * 0.55 + neonGrad * luma * 0.85, 0.38 * min(fx, 1.2));
+  }
+
+  // Ensure crisp readable foreground log text sits cleanly atop bloom & trails
+  col = max(col, crispGlyph) + crispGlyph * 0.22 * fx;
+
+  // Shockwave glowing ring highlight
+  if (shockRing > 0.002) {
+    vec3 ringCol = u_preset == 3 ? vec3(1.0, 0.32, 0.78) : vec3(0.35, 0.95, 1.0);
+    col += ringCol * shockRing * 0.42 * fx;
+  }
+
+  // Slice glitch invert highlight in Cyberpunk mode
+  if (abs(sliceGlitch) > 0.008) {
+    col = mix(col, col.gbr + vec3(0.08, 0.0, 0.06), 0.35);
+  }
+
+  // --- RASTER SCANLINES & TRINITRON APERTURE GRILLE ---
+  if (fx > 0.04) {
+    float scanFreq = u_res.y * 0.5;
+    float scanWave = 0.5 + 0.5 * sin(uv.y * scanFreq * 3.14159);
+    // Authentic CRT beam widening: bright log characters bridge across scanline gaps!
+    float charBrightness = clamp(dot(crispGlyph, vec3(0.333)), 0.0, 1.0);
+    float scanDepth = (u_preset == 0 ? 0.26 : (u_preset == 2 ? 0.16 : 0.14)) * min(fx, 1.3) * (1.0 - charBrightness * 0.58);
+    col *= (1.0 - scanDepth * scanWave);
+
+    if (u_preset == 0 || u_preset == 3) {
+      // Subtle RGB aperture grille triads
+      float triad = mod(floor(uv.x * u_res.x), 3.0);
+      vec3 mask = triad < 1.0 ? vec3(1.06, 0.96, 0.96)
+                : (triad < 2.0 ? vec3(0.96, 1.06, 0.96) : vec3(0.96, 0.96, 1.06));
+      col *= mix(vec3(1.0), mask, 0.45 * min(fx, 1.0));
+    }
+  }
+
+  // --- FLASH PULSE + CURVED GLASS VIGNETTE & SPECULAR CORNER SHEEN ---
+  col += vec3(0.20, 0.38, 0.35) * u_flashPulse * 0.32 * min(fx, 1.2);
+
+  vec2 vigUv = uv * (1.0 - uv.yx);
+  float vig = pow(max(0.0, vigUv.x * vigUv.y * 16.0), 0.16 * min(fx, 1.2));
+  col *= mix(1.0, vig, 0.75 * min(fx, 1.0));
+
+  // Subtle curved CRT glass corner reflection
+  if ((u_preset == 0 || u_preset == 2) && fx > 0.1) {
+    float sheen = exp(-length(uv - vec2(0.14, 0.88)) * 7.5) * 0.035 * min(fx, 1.0);
+    col += vec3(0.7, 0.88, 1.0) * sheen;
+  }
+
+  fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+`;
+
+  function compileShader(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.error("[LogBlaster] GLSL compile error:", gl.getShaderInfoLog(sh));
+      gl.deleteShader(sh);
+      return null;
+    }
+    return sh;
+  }
+
+  function createProgram(vsSrc, fsSrc) {
+    const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
+    const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
+    if (!vs || !fs) return null;
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      console.error("[LogBlaster] GLSL link error:", gl.getProgramInfoLog(prog));
+      return null;
+    }
+    return prog;
+  }
+
+  let feedbackProg = null;
+  let compositeProg = null;
+  let emptyVao = null;
+  let textTex = null;
+  let fboA = null, texA = null;
+  let fboB = null, texB = null;
+  let fbUniforms = {};
+  let compUniforms = {};
+
+  function makeRenderTarget(w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { fbo, tex };
+  }
+
+  function resizePipelines() {
+    // Cap DPR to 1.5 so text stays razor-sharp while Intel iGPU runs easily at 60fps (<0.4ms/frame)
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const w = Math.max(320, Math.floor(window.innerWidth * dpr));
+    const h = Math.max(200, Math.floor(window.innerHeight * dpr));
+
+    if (glCanvas.width === w && glCanvas.height === h) return;
+
+    glCanvas.width = w;
+    glCanvas.height = h;
+    textCanvas.width = w;
+    textCanvas.height = h;
+    textCanvas._dpr = dpr;
+
+    if (!gl) return;
+
+    if (!textTex) textTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, textTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    if (fboA) { gl.deleteFramebuffer(fboA); gl.deleteTexture(texA); }
+    if (fboB) { gl.deleteFramebuffer(fboB); gl.deleteTexture(texB); }
+
+    const rtA = makeRenderTarget(w, h);
+    const rtB = makeRenderTarget(w, h);
+    fboA = rtA.fbo; texA = rtA.tex;
+    fboB = rtB.fbo; texB = rtB.tex;
+  }
+
+  if (gl) {
+    feedbackProg = createProgram(VERT_SRC, FEEDBACK_FRAG);
+    compositeProg = createProgram(VERT_SRC, COMPOSITE_FRAG);
+    emptyVao = gl.createVertexArray();
+
+    for (const u of ["u_textTex", "u_prevTex", "u_res", "u_time", "u_preset", "u_fx", "u_blastRate"]) {
+      fbUniforms[u] = gl.getUniformLocation(feedbackProg, u);
+    }
+    for (const u of [
+      "u_textTex", "u_feedbackTex", "u_res", "u_time", "u_preset", "u_fx",
+      "u_blastRate", "u_stepPulse", "u_nodePulse", "u_glitchBurst",
+      "u_flashPulse", "u_degauss", "u_shockTime", "u_shockCenter",
+    ]) {
+      compUniforms[u] = gl.getUniformLocation(compositeProg, u);
+    }
+  }
+
+  window.addEventListener("resize", resizePipelines);
+  resizePipelines();
+
+  // =========================================================================
+  // 8. MAIN 60FPS RENDER LOOP (PAUSES AUTOMATICALLY WHEN TAB HIDDEN)
+  // =========================================================================
+  let lastFrameMs = performance.now();
+  let fpsFrames = 0;
+  let fpsTimerMs = lastFrameMs;
+  let pingPong = false;
+
+  function renderFrame(nowMs) {
+    requestAnimationFrame(renderFrame);
+    if (document.hidden) {
+      lastFrameMs = nowMs;
+      return;
+    }
+
+    const dtSec = Math.min(0.1, Math.max(0.001, (nowMs - lastFrameMs) / 1000));
+    lastFrameMs = nowMs;
+
+    fpsFrames++;
+    if (nowMs - fpsTimerMs >= 500) {
+      state.fps = Math.round((fpsFrames * 1000) / (nowMs - fpsTimerMs));
+      fpsFrames = 0;
+      fpsTimerMs = nowMs;
+    }
+
+    // Smooth exponential decay of GPU reactive pulses
+    state.blastRate = Math.max(0.0, state.blastRate - dtSec * 0.72);
+    state.stepPulse = Math.max(0.0, state.stepPulse - dtSec * 2.6);
+    state.nodePulse = Math.max(0.0, state.nodePulse - dtSec * 1.9);
+    state.glitchBurst = Math.max(0.0, state.glitchBurst - dtSec * 1.65);
+    state.flashPulse = Math.max(0.0, state.flashPulse - dtSec * 1.8);
+    state.degaussWobble = Math.max(0.0, state.degaussWobble - dtSec * 1.4);
+
+    // 1. Render crisp log text + live spectrum onto transparent 2D canvas
+    renderTextTexture(nowMs, dtSec);
+    if (!gl || !feedbackProg || !compositeProg) return;
+
+    const w = glCanvas.width;
+    const h = glCanvas.height;
+    const tSec = nowMs * 0.001;
+
+    // 2. Upload textCanvas into u_textTex
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, textTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+
+    const readTex = pingPong ? texA : texB;
+    const writeFbo = pingPong ? fboB : fboA;
+    const writeTex = pingPong ? texB : texA;
+    pingPong = !pingPong;
+
+    gl.bindVertexArray(emptyVao);
+
+    // 3. PASS 1 -> Ping-Pong Temporal Feedback FBO
+    gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(feedbackProg);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, textTex);
+    gl.uniform1i(fbUniforms.u_textTex, 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, readTex);
+    gl.uniform1i(fbUniforms.u_prevTex, 1);
+
+    gl.uniform2f(fbUniforms.u_res, w, h);
+    gl.uniform1f(fbUniforms.u_time, tSec);
+    gl.uniform1i(fbUniforms.u_preset, state.preset);
+    gl.uniform1f(fbUniforms.u_fx, state.fxIntensity);
+    gl.uniform1f(fbUniforms.u_blastRate, state.blastRate);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // 4. PASS 2 -> Final GPU Shader Composite on Screen
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(compositeProg);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, textTex);
+    gl.uniform1i(compUniforms.u_textTex, 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, writeTex);
+    gl.uniform1i(compUniforms.u_feedbackTex, 1);
+
+    gl.uniform2f(compUniforms.u_res, w, h);
+    gl.uniform1f(compUniforms.u_time, tSec);
+    gl.uniform1i(compUniforms.u_preset, state.preset);
+    gl.uniform1f(compUniforms.u_fx, state.fxIntensity);
+    gl.uniform1f(compUniforms.u_blastRate, state.blastRate);
+    gl.uniform1f(compUniforms.u_stepPulse, state.stepPulse);
+    gl.uniform1f(compUniforms.u_nodePulse, state.nodePulse);
+    gl.uniform1f(compUniforms.u_glitchBurst, state.glitchBurst);
+    gl.uniform1f(compUniforms.u_flashPulse, state.flashPulse);
+    gl.uniform1f(compUniforms.u_degauss, state.degaussWobble);
+    gl.uniform1f(compUniforms.u_shockTime, state.shockwaveTime);
+    gl.uniform2f(compUniforms.u_shockCenter, state.shockwaveCenter[0], state.shockwaveCenter[1]);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // Boot banner + live WebSocket start
+  ingestLogChunk("[LogBlaster] WebGL2 GPU Log-Text Visualizer initialized (Keys: 1-4 Shaders | T Tint | B Test Blast | Space Pause)\n");
+  ingestLogChunk(`[LogBlaster] Active Shader GPU: ${state.shaderRendererName} (powerPreference=${preferHighGpu ? "high-performance" : "low-power"})\n`);
+  connectComfySocket();
+  requestAnimationFrame(renderFrame);
+})();
+</script>
+</body>
+</html>

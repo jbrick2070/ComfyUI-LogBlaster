@@ -1,0 +1,12 @@
+[project]
+name = "comfyui-logblaster"
+description = "Real-time WebGL2 GPU Shader Log-Text Visualizer & Auto-Popup HUD for ComfyUI."
+version = "0.1.0"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.comfy]
+PublisherId = "jbrick2070"
+DisplayName = "ComfyUI-LogBlaster"
+Icon = ""
