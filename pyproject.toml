@@ -1,12 +1,56 @@
 [project]
 name = "comfyui-logblaster"
-description = "Real-time WebGL2 GPU Shader Log-Text Visualizer & Auto-Popup HUD for ComfyUI."
-version = "0.1.0"
-license = { text = "MIT" }
+version = "1.0.0"
+description = "Real-time Audio-Reactive WebGL2 GPU Shader Log-Text Visualizer & Auto-Popup HUD for ComfyUI — giant foreground streaming logs tapering into a 3D trail, 4 shaders, Comfy Black & Yellow palette, zero pip dependencies, and 0 MB extra PyTorch VRAM."
+readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = []
+authors = [
+    {name = "Jeffrey Brick", email = "jbrick2070@gmail.com"},
+]
+keywords = [
+    "comfyui",
+    "comfyui-nodes",
+    "comfyui-custom-node",
+    "logs",
+    "console",
+    "terminal",
+    "hud",
+    "webgl2",
+    "glsl",
+    "shaders",
+    "audio-reactive",
+    "telemetry",
+    "nvml",
+    "visualizer",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Artistic Software",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: System :: Logging",
+    "Topic :: System :: Monitoring",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: GPU :: NVIDIA CUDA",
+]
+
+[project.urls]
+Homepage = "https://github.com/jbrick2070/ComfyUI-LogBlaster"
+Repository = "https://github.com/jbrick2070/ComfyUI-LogBlaster"
+Issues = "https://github.com/jbrick2070/ComfyUI-LogBlaster/issues"
+Documentation = "https://github.com/jbrick2070/ComfyUI-LogBlaster#readme"
 
 [tool.comfy]
-PublisherId = "jbrick2070"
-DisplayName = "ComfyUI-LogBlaster"
-Icon = ""
+PublisherId = "fluxus"
+DisplayName = "LogBlaster"
+Icon = "https://raw.githubusercontent.com/jbrick2070/ComfyUI-LogBlaster/main/assets/logblaster_icon_400.png"
+Banner = "https://raw.githubusercontent.com/jbrick2070/ComfyUI-LogBlaster/main/assets/logblaster_banner.jpg"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

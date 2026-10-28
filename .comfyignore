@@ -1,0 +1,11 @@
+.git/
+.github/
+.kibitz/
+kibitz-runs/
+tests/
+docs/demo/
+assets/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
