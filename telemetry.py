@@ -8,6 +8,8 @@ from ``nvml.dll`` / ``libnvidia-ml.so.1`` in ~0.03 ms without importing
 from __future__ import annotations
 
 import ctypes
+import os
+import re
 import sys
 import threading
 import time
@@ -29,12 +31,27 @@ class _NvmlMemory(ctypes.Structure):
     ]
 
 
+def resolve_nvml_device_index(env: Optional[Dict[str, str]] = None) -> int:
+    """Resolve physical NVML GPU index from LOGBLASTER_NVML_INDEX or CUDA_VISIBLE_DEVICES."""
+    src = env if env is not None else os.environ
+    explicit = src.get("LOGBLASTER_NVML_INDEX", "").strip()
+    if explicit.isdigit():
+        return int(explicit)
+    cuda_vis = src.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if cuda_vis:
+        first_token = cuda_vis.split(",")[0].strip()
+        if re.fullmatch(r"\d+", first_token):
+            return int(first_token)
+    return 0
+
+
 class NvmlReader:
     """Thread-safe lazy NVML reader with short TTL caching."""
 
-    def __init__(self, cache_ttl_sec: float = 0.4) -> None:
+    def __init__(self, cache_ttl_sec: float = 0.4, device_index: Optional[int] = None) -> None:
         self._lock = threading.Lock()
         self._cache_ttl = cache_ttl_sec
+        self._device_index = device_index
         self._last_ts = 0.0
         self._last_payload: Optional[Dict[str, Any]] = None
         self._initialized = False
@@ -69,6 +86,7 @@ class NvmlReader:
 
         try:
             init_fn = getattr(lib, "nvmlInit_v2", None) or getattr(lib, "nvmlInit")
+            init_fn.restype = ctypes.c_int
             if init_fn() != 0:
                 self._failed = True
                 return False
@@ -77,10 +95,27 @@ class NvmlReader:
                 getattr(lib, "nvmlDeviceGetHandleByIndex_v2", None)
                 or getattr(lib, "nvmlDeviceGetHandleByIndex")
             )
+            get_handle.restype = ctypes.c_int
+
+            target_idx = (
+                self._device_index
+                if self._device_index is not None
+                else resolve_nvml_device_index()
+            )
             handle = ctypes.c_void_p()
-            if get_handle(ctypes.c_uint(0), ctypes.byref(handle)) != 0:
+            rc = get_handle(ctypes.c_uint(target_idx), ctypes.byref(handle))
+            if rc != 0 and target_idx != 0:
+                handle = ctypes.c_void_p()
+                rc = get_handle(ctypes.c_uint(0), ctypes.byref(handle))
+            if rc != 0:
                 self._failed = True
                 return False
+
+            lib.nvmlDeviceGetName.restype = ctypes.c_int
+            lib.nvmlDeviceGetUtilizationRates.restype = ctypes.c_int
+            lib.nvmlDeviceGetMemoryInfo.restype = ctypes.c_int
+            lib.nvmlDeviceGetTemperature.restype = ctypes.c_int
+            lib.nvmlDeviceGetPowerUsage.restype = ctypes.c_int
 
             name_buf = ctypes.create_string_buffer(96)
             if lib.nvmlDeviceGetName(handle, name_buf, ctypes.c_uint(96)) == 0:
@@ -108,6 +143,7 @@ class NvmlReader:
                 payload: Dict[str, Any] = {
                     "ok": False,
                     "available": False,
+                    "metrics_mode": "unavailable",
                     "gpu_name": "Unavailable",
                     "gpu_util": 0,
                     "mem_util": 0,
@@ -155,6 +191,7 @@ class NvmlReader:
             payload = {
                 "ok": True,
                 "available": True,
+                "metrics_mode": "nvml",
                 "gpu_name": self._gpu_name,
                 "gpu_util": gpu_util,
                 "mem_util": mem_util,

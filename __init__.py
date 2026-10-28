@@ -89,16 +89,20 @@ def register_routes(prompt_server: Any) -> bool:
 if not _IS_DUPLICATE_LOAD:
     try:
         from server import PromptServer  # type: ignore
+    except (ImportError, ModuleNotFoundError):
+        # Imported outside a live ComfyUI runtime (e.g. pytest or AST audit).
+        PromptServer = None  # type: ignore
 
-        if getattr(PromptServer, "instance", None) is not None:
-            if register_routes(PromptServer.instance):
-                print(
-                    "[LogBlaster] GPU Shader Log HUD ready at /logblaster "
-                    "(auto-popup extension loaded)"
-                )
-    except Exception as _route_exc:
-        # Outside a live ComfyUI server (e.g. pytest or offline AST inspection).
-        pass
+    if PromptServer is not None:
+        try:
+            if getattr(PromptServer, "instance", None) is not None:
+                if register_routes(PromptServer.instance):
+                    print(
+                        "[LogBlaster] GPU Shader Log HUD ready at /logblaster "
+                        "(auto-popup extension loaded)"
+                    )
+        except Exception as _route_exc:
+            print(f"[LogBlaster] Failed to register HTTP routes: {_route_exc}")
 
 WEB_DIRECTORY = None if _IS_DUPLICATE_LOAD else "./js"
 

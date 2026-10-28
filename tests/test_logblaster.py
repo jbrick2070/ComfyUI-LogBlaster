@@ -54,6 +54,7 @@ def test_telemetry_snapshot_schema_and_no_paths() -> None:
     required_keys = {
         "ok",
         "available",
+        "metrics_mode",
         "gpu_name",
         "gpu_util",
         "mem_util",
@@ -63,9 +64,15 @@ def test_telemetry_snapshot_schema_and_no_paths() -> None:
         "power_w",
     }
     assert required_keys.issubset(snap.keys())
+    assert snap["metrics_mode"] in {"nvml", "unavailable"}
     serialized = json.dumps(snap)
     assert not re.search(r"[A-Za-z]:\\", serialized)
     assert "/Users/" not in serialized
+
+    assert telemetry.resolve_nvml_device_index({"LOGBLASTER_NVML_INDEX": "2"}) == 2
+    assert telemetry.resolve_nvml_device_index({"CUDA_VISIBLE_DEVICES": "3,1"}) == 3
+    assert telemetry.resolve_nvml_device_index({"CUDA_VISIBLE_DEVICES": "GPU-uuid-stub"}) == 0
+    assert telemetry.resolve_nvml_device_index({}) == 0
 
 
 def test_telemetry_unavailable_fallback() -> None:
@@ -75,6 +82,7 @@ def test_telemetry_unavailable_fallback() -> None:
     snap = reader.snapshot()
     assert snap["ok"] is False
     assert snap["available"] is False
+    assert snap["metrics_mode"] == "unavailable"
     assert snap["vram_total_mib"] == 0
 
 
@@ -130,7 +138,7 @@ def test_http_routes_shaders_and_hardened_contracts() -> None:
     html_body = html_resp.text
     assert html_body is not None
 
-    # 4 WebGL2 shaders + multi-scale view modes (CASCADE | DUAL | DRUM | FLAT)
+    # 4 WebGL2 shaders + multi-scale view modes (CASCADE | DUAL | DRUM | FLAT) + COMFY B&Y palette
     assert "#version 300 es" in html_body
     assert "/internal/logs/subscribe" in html_body
     assert "RETRO CRT PHOSPHOR" in html_body
@@ -138,15 +146,22 @@ def test_http_routes_shaders_and_hardened_contracts() -> None:
     assert "VINTAGE RADIO OSCILLOSCOPE" in html_body
     assert "ARCADE NEON // SYNTHWAVE" in html_body
     assert 'const VIEW_MODES = ["CASCADE", "DUAL", "DRUM", "FLAT"]' in html_body
+    assert 'const TINT_NAMES = ["AUTO", "COMFY B&Y", "AMBER P3", "GREEN P31", "ICE CYAN"]' in html_body
     assert "wrapSpansMonospace" in html_body
     assert "u_viewMode" in html_body
+    assert "u_tintMode" in html_body
     assert "VIEW: CASCADE" in html_body
 
-    # Bounded render overhead, privacy redaction, fallback telemetry & unsubscribe
+    # Bounded render overhead, privacy redaction, context recovery, fallback telemetry & unsubscribe
     assert 'powerPreference: preferHighGpu ? "high-performance" : "low-power"' in html_body
     assert "FPS: ECO" in html_body
+    assert "MAX_RENDER_PIXELS" in html_body
+    assert "MAX_LINE_CHARS" in html_body
+    assert "checkFramebufferStatus" in html_body
+    assert "webglcontextlost" in html_body
     assert "redactSensitiveText" in html_body
     assert "/system_stats" in html_body
+    assert "state.logSubscribed" in html_body
     assert "keepalive: true" in html_body
 
     # Zero-echo Web Audio topology: analyser must NEVER connect to audioCtx.destination
@@ -163,9 +178,10 @@ def test_http_routes_shaders_and_hardened_contracts() -> None:
     assert "Access-Control-Allow-Origin" not in telem_resp.headers
     telem_data = json.loads(telem_resp.text)
     assert "vram_used_mib" in telem_data
+    assert "metrics_mode" in telem_data
 
 
-def test_frontend_js_syntax(tmp_path: Path) -> None:
+def test_frontend_js_syntax_and_unit_behaviors(tmp_path: Path) -> None:
     node_bin = shutil.which("node")
     if not node_bin:
         return
@@ -176,9 +192,78 @@ def test_frontend_js_syntax(tmp_path: Path) -> None:
     html_text = (REPO_ROOT / "web_app" / "index.html").read_text(encoding="utf-8")
     m = re.search(r"<script>([\s\S]*)</script>", html_text)
     assert m is not None, "Missing <script> block in web_app/index.html"
+    inline_src = m.group(1)
     inline_js = tmp_path / "inline_app.js"
-    inline_js.write_text(m.group(1), encoding="utf-8")
+    inline_js.write_text(inline_src, encoding="utf-8")
     proc_inline = subprocess.run(
         [node_bin, "--check", str(inline_js)], capture_output=True, text=True
     )
     assert proc_inline.returncode == 0, proc_inline.stderr
+
+    # Extract redactSensitiveText and wrapSpansMonospace and run real behavioral assertions in Node
+    redact_match = re.search(
+        r"function redactSensitiveText\(input\)\s*\{[\s\S]*?\n  \}", inline_src
+    )
+    wrap_match = re.search(
+        r"function wrapSpansMonospace\(spans, maxCols, maxRows\)\s*\{[\s\S]*?\n  \}",
+        inline_src,
+    )
+    assert redact_match is not None, "Could not locate redactSensitiveText"
+    assert wrap_match is not None, "Could not locate wrapSpansMonospace"
+
+    harness = f"""
+const assert = require("assert");
+const state = {{ redactEnabled: true }};
+{redact_match.group(0)}
+{wrap_match.group(0)}
+
+// 1. Positive redaction vectors
+assert.strictEqual(
+  redactSensitiveText("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+  "Authorization: Bearer ***REDACTED***"
+);
+assert.strictEqual(
+  redactSensitiveText("Bearer super_secret_token_999"),
+  "Bearer ***REDACTED***"
+);
+assert.strictEqual(
+  redactSensitiveText("key=sk-proj-1234567890abcdef"),
+  "key=sk-pro***REDACTED***"
+);
+assert.strictEqual(
+  redactSensitiveText("aws=AKIAIOSFODNN7EXAMPLE"),
+  "aws=AKIA***REDACTED***"
+);
+assert.strictEqual(
+  redactSensitiveText("GET https://api.example.test/v1?api_key=mysecretvalue123&mode=fast"),
+  "GET https://api.example.test/v1?api_key=***REDACTED***&mode=fast"
+);
+assert.strictEqual(
+  redactSensitiveText("Loading C:\\\\Users\\\\jeffr\\\\Documents\\\\model.safetensors"),
+  "Loading ~\\\\Documents\\\\model.safetensors"
+);
+
+// 2. Negative redaction vectors (normal ComfyUI logs must remain untouched)
+const cleanLine = "[OldTimeRadio] Stage 1/4: 42.8 tok/s | LOG TOKEN SPECTRUM";
+assert.strictEqual(redactSensitiveText(cleanLine), cleanLine);
+
+// 3. wrapSpansMonospace preserves colored spans & prevents 3-char orphan tails
+const spans = [
+  {{ text: "Prompt executed in ", color: "#4dffb5", hot: false }},
+  {{ text: "00:04.68", color: "#ffe680", hot: true }},
+  {{ text: " === COMPLETE ===", color: "#4dffb5", hot: false }},
+];
+const rows = wrapSpansMonospace(spans, 41, 3);
+assert.strictEqual(rows.length, 2);
+const row2Text = rows[1].map((s) => s.text).join("");
+assert.ok(row2Text.length >= 8, "Expected non-orphan row 2, got: " + row2Text);
+assert.strictEqual(rows[0][1].color, "#ffe680");
+console.log("JS_UNIT_OK");
+"""
+    harness_js = tmp_path / "unit_harness.js"
+    harness_js.write_text(harness, encoding="utf-8")
+    proc_unit = subprocess.run(
+        [node_bin, str(harness_js)], capture_output=True, text=True
+    )
+    assert proc_unit.returncode == 0, proc_unit.stderr
+    assert "JS_UNIT_OK" in proc_unit.stdout

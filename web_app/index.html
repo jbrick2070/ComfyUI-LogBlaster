@@ -181,7 +181,7 @@
     <button class="hud-btn" id="btnAudioIn" title="Click: Capture System/Tab Audio | Shift+Click: Mic Input | Drop audio file anywhere (Hotkey: A)">AUDIO: OFF</button>
   </div>
   <div class="dock-group">
-    <button class="hud-btn" id="btnTint" title="Cycle Phosphor Palette (Hotkey: T)">TINT: AUTO</button>
+    <button class="hud-btn" id="btnTint" title="Cycle Color Palette: AUTO, COMFY B&amp;Y (Black &amp; Yellow), AMBER P3, GREEN P31, ICE CYAN (Hotkey: T, or Y for Comfy Black &amp; Yellow)">TINT: AUTO</button>
     <span class="fx-label">FX</span>
     <input type="range" id="fxSlider" class="fx-slider" min="0" max="160" value="100" title="GPU Shader Intensity (0% raw fast-blit -> 160% overdrive)" />
     <button class="hud-btn" id="btnFps" title="Frame-rate governor: ECO (30fps active / 15fps idle), 60fps, or MAX monitor refresh">FPS: ECO</button>
@@ -209,6 +209,9 @@
   // 1. STATE, URL OVERRIDES, RING BUFFER & TELEMETRY
   // =========================================================================
   const MAX_LINES = 3500;
+  const MAX_LINE_CHARS = 2048;
+  const MAX_RENDER_WIDTH = 2240;
+  const MAX_RENDER_PIXELS = 2_600_000;
   const SPECTRUM_BINS = 48;
   const WAVE_SAMPLES = 160;
   const AUDIO_TEX_WIDTH = 256;
@@ -219,9 +222,24 @@
     "VINTAGE RADIO OSCILLOSCOPE",
     "ARCADE NEON // SYNTHWAVE",
   ];
-  const TINT_NAMES = ["AUTO", "AMBER P3", "GREEN P31", "ICE CYAN"];
+  const TINT_NAMES = ["AUTO", "COMFY B&Y", "AMBER P3", "GREEN P31", "ICE CYAN"];
   const FPS_MODES = ["ECO", "60", "MAX"];
   const VIEW_MODES = ["CASCADE", "DUAL", "DRUM", "FLAT"];
+
+  function storageGet(key, fallback = null) {
+    try {
+      const val = localStorage.getItem(key);
+      return val !== null ? val : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function storageSet(key, val) {
+    try {
+      localStorage.setItem(key, String(val));
+    } catch (_) {}
+  }
 
   const params = new URLSearchParams(location.search);
   const preferHighGpu = params.get("gpu") === "high";
@@ -233,43 +251,63 @@
       // Accept 1..4 (human 1-indexed) or 0..3
       return Math.max(0, Math.min(3, n >= 1 && n <= 4 ? n - 1 : n));
     }
-    return Number(localStorage.getItem("logblaster.preset") || 0) % 4;
+    return ((Number(storageGet("logblaster.preset", "0")) % 4) + 4) % 4;
+  }
+
+  function resolveInitialTintMode() {
+    const raw = (params.get("tint") || "").trim();
+    if (raw) {
+      const upper = raw.toUpperCase();
+      if (upper === "COMFY" || upper === "YELLOW" || upper === "BY" || upper === "COMFY B&Y") return 1;
+      if (upper === "AMBER" || upper === "AMBER P3") return 2;
+      if (upper === "GREEN" || upper === "GREEN P31") return 3;
+      if (upper === "CYAN" || upper === "ICE CYAN") return 4;
+      if (upper === "AUTO") return 0;
+      const n = Number(raw);
+      if (!Number.isNaN(n)) return Math.max(0, Math.min(TINT_NAMES.length - 1, Math.trunc(n)));
+    }
+    const savedName = (storageGet("logblaster.tintName", "") || "").toUpperCase();
+    const byNameIdx = TINT_NAMES.indexOf(savedName);
+    if (byNameIdx >= 0) return byNameIdx;
+    const savedIdx = Number(storageGet("logblaster.tint", "0"));
+    return Number.isFinite(savedIdx)
+      ? Math.max(0, Math.min(TINT_NAMES.length - 1, Math.trunc(savedIdx)))
+      : 0;
   }
 
   function resolveInitialFpsMode() {
     const q = (params.get("fps") || "").toUpperCase();
     if (FPS_MODES.includes(q)) return q;
-    const saved = (localStorage.getItem("logblaster.fpsMode") || "ECO").toUpperCase();
+    const saved = (storageGet("logblaster.fpsMode", "ECO") || "ECO").toUpperCase();
     return FPS_MODES.includes(saved) ? saved : "ECO";
   }
 
   function resolveInitialViewMode() {
     const q = (params.get("view") || "").toUpperCase();
     if (VIEW_MODES.includes(q)) return q;
-    const saved = (localStorage.getItem("logblaster.viewMode") || "CASCADE").toUpperCase();
+    const saved = (storageGet("logblaster.viewMode", "CASCADE") || "CASCADE").toUpperCase();
     return VIEW_MODES.includes(saved) ? saved : "CASCADE";
   }
 
   const state = {
     preset: resolveInitialPreset(),
     viewMode: resolveInitialViewMode(),
-    tintMode: params.get("tint") !== null
-      ? Math.max(0, Math.min(3, Number(params.get("tint")) || 0))
-      : Number(localStorage.getItem("logblaster.tint") || 0) % 4,
+    tintMode: resolveInitialTintMode(),
     fxIntensity: params.get("fx") !== null
       ? Math.max(0, Math.min(1.6, Number(params.get("fx")) / 100.0))
-      : Number(localStorage.getItem("logblaster.fx") ?? 100) / 100.0,
+      : Number(storageGet("logblaster.fx", "100")) / 100.0,
     fpsMode: resolveInitialFpsMode(),
     redactEnabled: params.get("redact") !== null
       ? params.get("redact") !== "0"
-      : (localStorage.getItem("logblaster.redact") ?? "1") !== "0",
-    fontSize: Math.min(22, Math.max(11, Number(localStorage.getItem("logblaster.fontSize") || 14))),
+      : storageGet("logblaster.redact", "1") !== "0",
+    fontSize: Math.min(22, Math.max(11, Number(storageGet("logblaster.fontSize", "14")) || 14)),
     paused: false,
     scrollBackLines: 0,
     filterQuery: "",
 
-    // Dirty-gating & error navigation
+    // Dirty-gating, cached filter versioning & error navigation
     textDirty: true,
+    linesVersion: 0,
     lastClockDrawMs: 0,
     newestLineMs: 0,
     errorCount: 0,
@@ -277,6 +315,7 @@
 
     // Live ComfyUI connection + execution state
     wsConnected: false,
+    logSubscribed: false,
     logStreamAvailable: true,
     warnedNoLogSub: false,
     clientId: "logblaster-" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)),
@@ -329,10 +368,10 @@
     waveform: new Float32Array(WAVE_SAMPLES),
     waveWriteIdx: 0,
 
-    // Hardware telemetry
+    // Hardware telemetry & WebGL2 health
     gpuTelemetry: {
       available: false,
-      metrics_mode: "nvml", // nvml | vram_only
+      metrics_mode: "nvml", // nvml | vram_only | unavailable
       gpu_name: "Detecting GPU...",
       gpu_util: 0,
       vram_used_mib: 0,
@@ -340,7 +379,9 @@
       temp_c: 0,
       power_w: 0,
     },
-    shaderRendererName: "WebGL2 GPU",
+    shaderRendererName: "WebGL2 (Adapter Masked)",
+    fboReady: false,
+    contextLost: false,
     fps: 30,
   };
 
@@ -356,7 +397,9 @@
       .replace(/\b(gh[pousr]_[A-Za-z0-9]{3})[A-Za-z0-9]{12,}\b/g, "$1***REDACTED***")
       .replace(/\b(hf_[A-Za-z0-9]{3})[A-Za-z0-9]{12,}\b/g, "$1***REDACTED***")
       .replace(/\b(AIza[0-9A-Za-z_-]{3})[0-9A-Za-z_-]{16,}\b/g, "$1***REDACTED***")
-      .replace(/((?:Bearer|api[_-]?key|access[_-]?token|secret)\s*[:=]\s*)(["']?)[^\s"'&]{8,}\2/gi, "$1$2***REDACTED***$2")
+      .replace(/\b(AKIA)[0-9A-Z]{16}\b/g, "$1***REDACTED***")
+      .replace(/((?:Authorization\s*:\s*)?Bearer\s+)([^\s"',;&]{8,})/gi, "$1***REDACTED***")
+      .replace(/(\b(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password)\s*[:=]\s*)(["']?)[^\s"',;&]{6,}\2/gi, "$1$2***REDACTED***$2")
       .replace(/[A-Za-z]:\\Users\\[^\\\s"']+\\/gi, "~\\")
       .replace(/[A-Za-z]:\/Users\/[^/\s"']+\//gi, "~/")
       .replace(/\/(?:Users|home)\/[^/\s"']+\//g, "~/");
@@ -503,13 +546,13 @@
       state.currentFileObjectUrl = null;
     }
     state.audioInMode = "OFF";
+    state.audioActive = state.synthEnabled;
     state.textDirty = true;
   }
 
   async function toggleExternalAudio(useMic = false) {
     if (state.audioInMode !== "OFF") {
       disconnectExternalAudio();
-      state.audioActive = state.synthEnabled;
       syncControlsUI();
       showToast("EXTERNAL AUDIO INPUT DISCONNECTED");
       return;
@@ -536,6 +579,7 @@
         });
         stream.getVideoTracks().forEach((vt) => vt.stop());
         if (stream.getAudioTracks().length === 0) {
+          stream.getTracks().forEach((tr) => tr.stop());
           showToast("TIP: Tick 'Also share system audio' in picker (or Shift+Click for Mic)");
           return;
         }
@@ -548,7 +592,6 @@
       externalSourceNode.connect(analyser);
       stream.getAudioTracks()[0].addEventListener("ended", () => {
         disconnectExternalAudio();
-        state.audioActive = state.synthEnabled;
         syncControlsUI();
       });
 
@@ -566,11 +609,29 @@
     ev.preventDefault();
     const file = ev.dataTransfer?.files?.[0];
     if (!file) return;
+    const isAudio =
+      (file.type && file.type.startsWith("audio/")) ||
+      /\.(mp3|wav|ogg|flac|m4a|aac|opus|webm)$/i.test(file.name || "");
+    if (!isAudio) {
+      showToast("DROP AN AUDIO FILE (.mp3, .wav, .ogg, .flac, .m4a)");
+      return;
+    }
     ensureAudioGraph();
     disconnectExternalAudio();
     if (!fileAudioEl) {
       fileAudioEl = new Audio();
       fileAudioEl.crossOrigin = "anonymous";
+      fileAudioEl.addEventListener("ended", () => {
+        disconnectExternalAudio();
+        syncControlsUI();
+      });
+      fileAudioEl.addEventListener("error", () => {
+        if (state.audioInMode === "FILE") {
+          disconnectExternalAudio();
+          syncControlsUI();
+          showToast("AUDIO FILE PLAYBACK ENDED / UNSUPPORTED");
+        }
+      });
     }
     state.currentFileObjectUrl = URL.createObjectURL(file);
     fileAudioEl.src = state.currentFileObjectUrl;
@@ -581,13 +642,18 @@
       fileMediaNode.connect(analyser);
       fileMediaNode.connect(audioCtx.destination);
     }
-    fileAudioEl.play().catch(() => {});
     state.audioInMode = "FILE";
     state.audioActive = true;
     state.textDirty = true;
     syncControlsUI();
-    ingestLogChunk(`[LogBlaster:SHOCKWAVE] >>> AUDIO-REACTIVE PLAYBACK: ${file.name} <<<\n`);
-    showToast(`PLAYING & VISUALIZING: ${file.name}`);
+    fileAudioEl.play().then(() => {
+      ingestLogChunk(`[LogBlaster:SHOCKWAVE] >>> AUDIO-REACTIVE PLAYBACK: ${file.name} <<<\n`);
+      showToast(`PLAYING & VISUALIZING: ${file.name}`);
+    }).catch(() => {
+      disconnectExternalAudio();
+      syncControlsUI();
+      showToast("COULD NOT DECODE AUDIO FILE");
+    });
   });
 
   function updateAudioAnalysis(nowMs, dtSec) {
@@ -681,10 +747,20 @@
   const btnRedact = document.getElementById("btnRedact");
   const btnPause = document.getElementById("btnPause");
 
+  let cachedFilterVersion = -1;
+  let cachedFilterQuery = "";
+  let cachedFilteredLines = state.lines;
+
   function getFilteredLines() {
     const q = state.filterQuery.trim().toLowerCase();
     if (!q) return state.lines;
-    return state.lines.filter((l) => l.viewRaw.toLowerCase().includes(q));
+    if (cachedFilterVersion === state.linesVersion && cachedFilterQuery === q) {
+      return cachedFilteredLines;
+    }
+    cachedFilteredLines = state.lines.filter((l) => l.viewLower.includes(q));
+    cachedFilterVersion = state.linesVersion;
+    cachedFilterQuery = q;
+    return cachedFilteredLines;
   }
 
   function recomputeErrorCount() {
@@ -695,7 +771,34 @@
     state.errorCount = errs;
   }
 
+  function applyHudCssTheme() {
+    const rootStyle = document.documentElement.style;
+    if (state.tintMode === 1) {
+      // COMFY B&Y — Iconic Pitch Black & Electric Comfy Yellow Studio Palette
+      rootStyle.setProperty("--hud-bg", "rgba(7, 7, 5, 0.92)");
+      rootStyle.setProperty("--hud-border", "rgba(255, 214, 10, 0.48)");
+      rootStyle.setProperty("--hud-accent", "#ffd60a");
+      rootStyle.setProperty("--hud-text", "#fff8d6");
+    } else if (state.tintMode === 2) {
+      rootStyle.setProperty("--hud-bg", "rgba(14, 9, 4, 0.90)");
+      rootStyle.setProperty("--hud-border", "rgba(255, 182, 39, 0.42)");
+      rootStyle.setProperty("--hud-accent", "#ffb627");
+      rootStyle.setProperty("--hud-text", "#fff1cc");
+    } else if (state.tintMode === 3) {
+      rootStyle.setProperty("--hud-bg", "rgba(5, 14, 8, 0.90)");
+      rootStyle.setProperty("--hud-border", "rgba(51, 255, 102, 0.38)");
+      rootStyle.setProperty("--hud-accent", "#33ff66");
+      rootStyle.setProperty("--hud-text", "#dcffe6");
+    } else {
+      rootStyle.setProperty("--hud-bg", "rgba(8, 12, 18, 0.86)");
+      rootStyle.setProperty("--hud-border", "rgba(92, 225, 230, 0.34)");
+      rootStyle.setProperty("--hud-accent", "#4df3ff");
+      rootStyle.setProperty("--hud-text", "#d9f4ff");
+    }
+  }
+
   function syncControlsUI() {
+    applyHudCssTheme();
     presetBtns.forEach((b) => {
       b.classList.toggle("is-active", Number(b.dataset.preset) === state.preset);
     });
@@ -710,6 +813,7 @@
     btnAudioIn.classList.toggle("audio-active", state.audioInMode !== "OFF");
 
     btnTint.textContent = "TINT: " + TINT_NAMES[state.tintMode];
+    btnTint.classList.toggle("is-active", state.tintMode === 1);
     fxSlider.value = String(Math.round(state.fxIntensity * 100));
     btnFps.textContent = `FPS: ${state.fpsMode}`;
 
@@ -728,7 +832,7 @@
 
   function setPreset(idx) {
     state.preset = ((idx % 4) + 4) % 4;
-    localStorage.setItem("logblaster.preset", String(state.preset));
+    storageSet("logblaster.preset", state.preset);
     state.nodePulse = Math.max(state.nodePulse, 0.55);
     syncControlsUI();
     showToast(`SHADER ${state.preset + 1}: ${PRESET_NAMES[state.preset]}`);
@@ -741,7 +845,7 @@
   function cycleViewMode() {
     const nextIdx = (VIEW_MODES.indexOf(state.viewMode) + 1) % VIEW_MODES.length;
     state.viewMode = VIEW_MODES[nextIdx];
-    localStorage.setItem("logblaster.viewMode", state.viewMode);
+    storageSet("logblaster.viewMode", state.viewMode);
     for (const line of state.lines) {
       line._smoothH = 0;
     }
@@ -777,23 +881,32 @@
     toggleExternalAudio(Boolean(ev.shiftKey));
   });
 
-  btnTint.addEventListener("click", () => {
-    state.tintMode = (state.tintMode + 1) % 4;
-    localStorage.setItem("logblaster.tint", String(state.tintMode));
+  function setTintMode(idx) {
+    state.tintMode = ((idx % TINT_NAMES.length) + TINT_NAMES.length) % TINT_NAMES.length;
+    storageSet("logblaster.tint", state.tintMode);
+    storageSet("logblaster.tintName", TINT_NAMES[state.tintMode]);
+    state.flashPulse = Math.max(state.flashPulse, 0.35);
     syncControlsUI();
-    showToast(`PALETTE: ${TINT_NAMES[state.tintMode]}`);
+    const label = state.tintMode === 1
+      ? "COMFY B&Y (PITCH BLACK & ELECTRIC COMFY YELLOW)"
+      : TINT_NAMES[state.tintMode];
+    showToast(`PALETTE: ${label}`);
+  }
+
+  btnTint.addEventListener("click", () => {
+    setTintMode(state.tintMode + 1);
   });
 
   fxSlider.addEventListener("input", () => {
     state.fxIntensity = Number(fxSlider.value) / 100.0;
-    localStorage.setItem("logblaster.fx", fxSlider.value);
+    storageSet("logblaster.fx", fxSlider.value);
     state.textDirty = true;
   });
 
   btnFps.addEventListener("click", () => {
     const nextIdx = (FPS_MODES.indexOf(state.fpsMode) + 1) % FPS_MODES.length;
     state.fpsMode = FPS_MODES[nextIdx];
-    localStorage.setItem("logblaster.fpsMode", state.fpsMode);
+    storageSet("logblaster.fpsMode", state.fpsMode);
     syncControlsUI();
     const desc = state.fpsMode === "ECO"
       ? "ECO (30fps active / 15fps quiet)"
@@ -843,25 +956,26 @@
 
   btnRedact.addEventListener("click", () => {
     state.redactEnabled = !state.redactEnabled;
-    localStorage.setItem("logblaster.redact", state.redactEnabled ? "1" : "0");
+    storageSet("logblaster.redact", state.redactEnabled ? "1" : "0");
     // Rebuild display spans from stored raw source so redaction toggles cleanly in ~3ms
     for (const line of state.lines) {
       rebuildLineView(line);
     }
+    state.linesVersion++;
     syncControlsUI();
     showToast(state.redactEnabled ? "PRIVACY REDACTION: ON (Tokens & Home Paths Masked)" : "PRIVACY REDACTION: OFF (Raw Local Paths)");
   });
 
   document.getElementById("btnFontDown").addEventListener("click", () => {
     state.fontSize = Math.max(11, state.fontSize - 1);
-    localStorage.setItem("logblaster.fontSize", String(state.fontSize));
+    storageSet("logblaster.fontSize", state.fontSize);
     state.textDirty = true;
     showToast(`FONT SIZE: ${state.fontSize}px`);
   });
 
   document.getElementById("btnFontUp").addEventListener("click", () => {
     state.fontSize = Math.min(22, state.fontSize + 1);
-    localStorage.setItem("logblaster.fontSize", String(state.fontSize));
+    storageSet("logblaster.fontSize", state.fontSize);
     state.textDirty = true;
     showToast(`FONT SIZE: ${state.fontSize}px`);
   });
@@ -921,7 +1035,8 @@
     else if (ev.key === "e" || ev.key === "E") jumpToNextError();
     else if (ev.key === "m" || ev.key === "M") btnSynth.click();
     else if (ev.key === "a" || ev.key === "A") toggleExternalAudio(Boolean(ev.shiftKey));
-    else if (ev.key === "t" || ev.key === "T") btnTint.click();
+    else if (ev.key === "t" || ev.key === "T") setTintMode(state.tintMode + 1);
+    else if (ev.key === "y" || ev.key === "Y") setTintMode(state.tintMode === 1 ? 0 : 1);
     else if (ev.key === " ") { ev.preventDefault(); btnPause.click(); }
     else if (ev.key === "-" || ev.key === "_") document.getElementById("btnFontDown").click();
     else if (ev.key === "=" || ev.key === "+") document.getElementById("btnFontUp").click();
@@ -1093,6 +1208,7 @@
     const viewExpanded = redactSensitiveText(entry.origExpanded);
     const viewPlain = viewExpanded.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
     entry.viewRaw = viewPlain;
+    entry.viewLower = viewPlain.toLowerCase();
     entry.spans = tokenizeSpans(viewExpanded, entry.baseColor);
   }
 
@@ -1106,7 +1222,10 @@
   }
 
   function appendOrUpdateLine(rawLine, isoTime, replaceLast, silentBackfill = false) {
-    const origExpanded = rawLine.replace(/\t/g, "  ");
+    const boundedRaw = rawLine.length > MAX_LINE_CHARS
+      ? rawLine.slice(0, MAX_LINE_CHARS) + " … [truncated]"
+      : rawLine;
+    const origExpanded = boundedRaw.replace(/\t/g, "  ");
     const origPlain = origExpanded.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
     if (!origPlain.trim() && replaceLast) return;
 
@@ -1118,6 +1237,7 @@
       timeStr: formatTime(isoTime),
       origExpanded,
       viewRaw: "",
+      viewLower: "",
       spans: [],
       baseColor: sem.color,
       kind: sem.kind,
@@ -1149,6 +1269,7 @@
       }
     }
 
+    state.linesVersion++;
     state.textDirty = true;
     if (entry.kind === "error") {
       btnErrJump.textContent = `ERR: ${state.errorCount}`;
@@ -1204,6 +1325,11 @@
   // =========================================================================
   let ws = null;
   let reconnectTimer = null;
+  let reconnectDelayMs = 1500;
+  let busPongTimer = null;
+  let telemetryTimer = null;
+  let rateTimer = null;
+  let demoTimers = [];
 
   async function backfillAndSubscribeLogs() {
     try {
@@ -1229,6 +1355,7 @@
         body: JSON.stringify({ clientId: state.clientId, enabled: true }),
       });
       if (!subRes.ok) {
+        state.logSubscribed = false;
         state.logStreamAvailable = false;
         if (!state.warnedNoLogSub) {
           state.warnedNoLogSub = true;
@@ -1237,9 +1364,11 @@
           );
         }
       } else {
+        state.logSubscribed = true;
         state.logStreamAvailable = true;
       }
     } catch (_) {
+      state.logSubscribed = false;
       state.logStreamAvailable = false;
       if (!state.warnedNoLogSub) {
         state.warnedNoLogSub = true;
@@ -1251,7 +1380,16 @@
   }
 
   window.addEventListener("pagehide", () => {
-    if (!state.wsConnected || !state.logStreamAvailable) return;
+    clearTimeout(reconnectTimer);
+    clearInterval(busPongTimer);
+    clearInterval(telemetryTimer);
+    clearInterval(rateTimer);
+    demoTimers.forEach(clearTimeout);
+    demoTimers = [];
+    disconnectExternalAudio();
+
+    if (!state.logSubscribed) return;
+    state.logSubscribed = false;
     try {
       fetch("/internal/logs/subscribe", {
         method: "PATCH",
@@ -1262,6 +1400,13 @@
     } catch (_) {}
   });
 
+  function scheduleWsReconnect() {
+    clearTimeout(reconnectTimer);
+    const delay = reconnectDelayMs;
+    reconnectDelayMs = Math.min(12000, Math.round(reconnectDelayMs * 2));
+    reconnectTimer = setTimeout(connectComfySocket, delay);
+  }
+
   function connectComfySocket() {
     clearTimeout(reconnectTimer);
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -1270,11 +1415,12 @@
     try {
       ws = new WebSocket(wsUrl);
     } catch (_) {
-      reconnectTimer = setTimeout(connectComfySocket, 2000);
+      scheduleWsReconnect();
       return;
     }
 
     ws.addEventListener("open", () => {
+      reconnectDelayMs = 1500;
       state.wsConnected = true;
       state.textDirty = true;
       ingestLogChunk("[LogBlaster] Connected to ComfyUI live log + event stream (/ws)\n");
@@ -1369,7 +1515,7 @@
     ws.addEventListener("close", () => {
       state.wsConnected = false;
       state.textDirty = true;
-      reconnectTimer = setTimeout(connectComfySocket, 2200);
+      scheduleWsReconnect();
     });
 
     ws.addEventListener("error", () => {
@@ -1398,7 +1544,7 @@
         state.textDirty = true;
       }
     });
-    setInterval(() => {
+    busPongTimer = setInterval(() => {
       try { bus.postMessage({ type: "pong", ts: Date.now() }); } catch (_) {}
     }, 1500);
   } catch (_) {}
@@ -1411,7 +1557,7 @@
       if (res.ok) {
         const data = await res.json();
         if (data && data.available) {
-          state.gpuTelemetry = { ...data, metrics_mode: "nvml" };
+          state.gpuTelemetry = { ...data, metrics_mode: data.metrics_mode || "nvml" };
           state.textDirty = true;
           return;
         }
@@ -1423,15 +1569,28 @@
       const sysRes = await fetch("/system_stats", { cache: "no-store" });
       if (sysRes.ok) {
         const sysData = await sysRes.json();
-        const dev = Array.isArray(sysData?.devices) ? sysData.devices[0] : null;
+        const devs = Array.isArray(sysData?.devices)
+          ? sysData.devices
+          : (Array.isArray(sysData?.system?.devices) ? sysData.system.devices : []);
+        const dev = devs.find((d) => d && String(d.type || "").toLowerCase() !== "cpu") || devs[0] || null;
         if (dev) {
-          const totalMib = Math.round(Number(dev.vram_total || 0) / (1024 * 1024));
-          const freeMib = Math.round(Number(dev.vram_free || 0) / (1024 * 1024));
+          const rawTotal = Number(dev.vram_total);
+          const rawFree = Number(dev.vram_free);
+          const totalMib = Number.isFinite(rawTotal) && rawTotal >= 0
+            ? Math.round(rawTotal / (1024 * 1024))
+            : 0;
+          const freeMib = Number.isFinite(rawFree) && rawFree >= 0
+            ? Math.round(rawFree / (1024 * 1024))
+            : 0;
+          const cleanName = String(dev.name || dev.type || "Compute Device")
+            .replace(/^(?:cuda|mps|xpu|hip|cpu)(?::\d+)?\s+/i, "")
+            .replace(/\s*:.*$/, "")
+            .trim() || "Compute Device";
           state.gpuTelemetry = {
             ok: true,
             available: totalMib > 0,
             metrics_mode: "vram_only",
-            gpu_name: String(dev.name || dev.type || "Compute Device"),
+            gpu_name: cleanName,
             gpu_util: 0,
             vram_used_mib: Math.max(0, totalMib - freeMib),
             vram_total_mib: totalMib,
@@ -1443,10 +1602,10 @@
       }
     } catch (_) {}
   }
-  setInterval(pollTelemetry, 1200);
+  telemetryTimer = setInterval(pollTelemetry, 1200);
   pollTelemetry();
 
-  setInterval(() => {
+  rateTimer = setInterval(() => {
     if (state.cpsDisplay !== state.charsThisSec || state.lpsDisplay !== state.linesThisSec) {
       state.textDirty = true;
     }
@@ -1459,7 +1618,6 @@
   // =========================================================================
   // 7. SYNTHETIC "TEST BLAST" DEMO GENERATOR (HOTKEY: B)
   // =========================================================================
-  let demoTimers = [];
   function startTestBlast() {
     demoTimers.forEach(clearTimeout);
     demoTimers = [];
@@ -1548,12 +1706,25 @@
 
   function getPaletteColors() {
     if (state.tintMode === 1) {
-      return { primary: "#ffb627", bright: "#fff1b8", dim: "#b87400", accent: "#ffd166" };
+      // COMFY B&Y — Pitch Black & Electric Comfy Yellow Studio Palette
+      return {
+        primary: "#ffd60a",
+        bright: "#fff9c4",
+        dim: "#9e8624",
+        accent: "#ffd60a",
+        headerAccent: "#ffd60a",
+        bodyYellow: "#ffe869",
+        goldBadge: "#ffb703",
+        isComfyBY: true,
+      };
     }
     if (state.tintMode === 2) {
-      return { primary: "#33ff66", bright: "#d4ffe0", dim: "#19993c", accent: "#7dff9e" };
+      return { primary: "#ffb627", bright: "#fff1b8", dim: "#b87400", accent: "#ffd166" };
     }
     if (state.tintMode === 3) {
+      return { primary: "#33ff66", bright: "#d4ffe0", dim: "#19993c", accent: "#7dff9e" };
+    }
+    if (state.tintMode === 4) {
       return { primary: "#45eaff", bright: "#e0fbff", dim: "#1b8ca3", accent: "#94f5ff" };
     }
     if (state.preset === 2) {
@@ -1585,9 +1756,14 @@
         intervals.push([pos, pos + Math.max(1, safeCols - 1), true]);
         break;
       }
-      let splitAt = pos + safeCols;
-      const minBreak = pos + Math.floor(safeCols * 0.56);
-      for (let k = pos + safeCols; k >= minBreak; k--) {
+      // Prevent 1..7 character orphan tails (e.g. a lone "===") by pulling search window back 8 cols
+      let searchMax = pos + safeCols;
+      if (rem > safeCols && rem <= safeCols + 7 && safeCols > 24) {
+        searchMax = pos + safeCols - 8;
+      }
+      let splitAt = searchMax;
+      const minBreak = pos + Math.floor(safeCols * 0.52);
+      for (let k = searchMax; k >= minBreak; k--) {
         const ch = plain[k - 1];
         if (ch === " " || ch === "/" || ch === "\\" || ch === "|" || ch === "-" || ch === ":" || ch === "]" || ch === ",") {
           splitAt = k;
@@ -1625,6 +1801,12 @@
   }
 
   function resolveGutterColor(kind, pal) {
+    if (pal.isComfyBY) {
+      if (kind === "error") return "#ff453a";
+      if (kind === "warn") return "#ff9f0a";
+      if (kind === "complete" || kind === "shock") return "#fff36b";
+      return "#ffd60a";
+    }
     if (pal.primary) return pal.primary;
     if (kind === "error") return "#ff3860";
     if (kind === "warn") return "#ffc845";
@@ -1632,7 +1814,7 @@
     return "#4df3ff";
   }
 
-  function drawSpanRow(rowSpans, startX, maxRightX, y, lineFs, forceBold, birthFlash, pal) {
+  function drawSpanRow(rowSpans, startX, maxRightX, y, lineFs, forceBold, birthFlash, pal, lineKind = "normal") {
     const family = "'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace";
     let curX = startX;
     for (let s = 0; s < rowSpans.length; s++) {
@@ -1641,7 +1823,17 @@
       if (curX > maxRightX) break;
 
       if (birthFlash > 0.38) {
-        ctx.fillStyle = "#ffffff";
+        ctx.fillStyle = pal.isComfyBY ? "#fffdf0" : "#ffffff";
+      } else if (pal.isComfyBY) {
+        if (lineKind === "error") {
+          ctx.fillStyle = sp.hot ? "#ff948d" : "#ff453a";
+        } else if (lineKind === "warn") {
+          ctx.fillStyle = sp.hot ? "#ffd60a" : "#ff9f0a";
+        } else if (sp.hot) {
+          ctx.fillStyle = sp.text.startsWith("[") ? "#ffd60a" : pal.bright;
+        } else {
+          ctx.fillStyle = forceBold ? "#ffd60a" : pal.bodyYellow;
+        }
       } else if (pal.primary) {
         ctx.fillStyle = sp.hot ? pal.bright : pal.primary;
       } else {
@@ -1885,7 +2077,7 @@
         const distPx = Math.max(0, (logBottom - 6) - cursorBottomY);
         const distNorm = Math.min(1.0, distPx / Math.max(120, availH));
         const scaleCurve = Math.pow(1.0 - distNorm, isDrum ? 2.45 : 2.8);
-        const lineFs = Math.max(
+        let lineFs = Math.max(
           minTrailFs,
           Math.round((minTrailFs + (heroMaxFs - minTrailFs) * scaleCurve) * 2) / 2
         );
@@ -1904,8 +2096,15 @@
 
         const forceBold = isHeroRow || lineFs >= 25;
         ctx.font = `${forceBold ? "bold " : ""}${lineFs}px ${monoFamily}`;
-        const charW = Math.max(4, ctx.measureText("M").width);
-        const maxCols = Math.max(14, Math.floor(availTextW / charW));
+        let charW = Math.max(4, ctx.measureText("M").width);
+        let maxCols = Math.max(14, Math.floor(availTextW / charW));
+        // Auto-fit medium-length Hero headlines onto a single unbroken giant row when within 18%
+        if (isHeroRow && line.viewRaw.length > maxCols && line.viewRaw.length <= Math.floor(maxCols * 1.18)) {
+          lineFs = Math.max(minTrailFs, Math.round(lineFs * (maxCols / line.viewRaw.length) * 2) / 2);
+          ctx.font = `${forceBold ? "bold " : ""}${lineFs}px ${monoFamily}`;
+          charW = Math.max(4, ctx.measureText("M").width);
+          maxCols = Math.max(14, Math.floor(availTextW / charW));
+        }
         const maxWrap = isHeroRow ? 3 : (lineFs >= 23 ? 2 : 1);
         const wrappedRows = wrapSpansMonospace(line.spans, maxCols, maxWrap);
 
@@ -1962,7 +2161,8 @@
               lineFs,
               forceBold,
               birthFlash,
-              pal
+              pal,
+              line.kind
             );
           }
 
@@ -2009,7 +2209,7 @@
         ctx.fillStyle = birthFlash > 0.55 ? pal.bright : pal.dim;
         ctx.fillText(line.timeStr, padX + 8, y);
 
-        const endX = drawSpanRow(line.spans, textStartX, vw - padX, y, bgFs, false, birthFlash, pal);
+        const endX = drawSpanRow(line.spans, textStartX, vw - padX, y, bgFs, false, birthFlash, pal, line.kind);
         if (birthFlash > 0.15 && endX < vw - padX) {
           ctx.fillStyle = "#ffffff";
           ctx.fillRect(Math.min(vw - padX - 12, endX + 4), y - bgFs + 3, 8 * birthFlash, bgFs - 1);
@@ -2026,13 +2226,19 @@
       if (state.viewMode === "DUAL" && endIdx > 0) {
         const heroLine = activeList[endIdx - 1];
         const prevLine = endIdx >= 2 ? activeList[endIdx - 2] : null;
-        const colossalFs = Math.max(28, Math.min(Math.round(vw * 0.043), Math.round(fs * 3.85)));
+        let colossalFs = Math.max(28, Math.min(Math.round(vw * 0.043), Math.round(fs * 3.85)));
         const subHeroFs = Math.max(15, Math.round(colossalFs * 0.44));
 
         ctx.font = `bold ${colossalFs}px ${monoFamily}`;
-        const heroCharW = Math.max(6, ctx.measureText("M").width);
+        let heroCharW = Math.max(6, ctx.measureText("M").width);
         const heroAvailW = Math.max(160, vw - padX * 2 - 28);
-        const heroCols = Math.max(14, Math.floor(heroAvailW / heroCharW));
+        let heroCols = Math.max(14, Math.floor(heroAvailW / heroCharW));
+        if (heroLine.viewRaw.length > heroCols && heroLine.viewRaw.length <= Math.floor(heroCols * 1.18)) {
+          colossalFs = Math.max(24, Math.round(colossalFs * (heroCols / heroLine.viewRaw.length) * 2) / 2);
+          ctx.font = `bold ${colossalFs}px ${monoFamily}`;
+          heroCharW = Math.max(6, ctx.measureText("M").width);
+          heroCols = Math.max(14, Math.floor(heroAvailW / heroCharW));
+        }
         const heroRows = wrapSpansMonospace(heroLine.spans, heroCols, 2);
         const heroSubH = Math.round(colossalFs * 1.18);
         const bandHeight = heroRows.length * heroSubH + subHeroFs + 48;
@@ -2072,7 +2278,7 @@
           ctx.font = `${subHeroFs}px ${monoFamily}`;
           const prevCharW = Math.max(4, ctx.measureText("M").width);
           const prevRows = wrapSpansMonospace(prevLine.spans, Math.floor(heroAvailW / prevCharW), 1);
-          drawSpanRow(prevRows[0], padX + 14, vw - padX - 14, bandTop + 18 + subHeroFs + 4, subHeroFs, false, 0, pal);
+          drawSpanRow(prevRows[0], padX + 14, vw - padX - 14, bandTop + 18 + subHeroFs + 4, subHeroFs, false, 0, pal, prevLine.kind);
           ctx.globalAlpha = 1.0;
         }
 
@@ -2091,7 +2297,8 @@
             colossalFs,
             true,
             heroFlash,
-            pal
+            pal,
+            heroLine.kind
           );
         }
 
@@ -2138,7 +2345,7 @@
           .replace(/Direct3D11.*$/i, "")
           .replace(/NVIDIA GeForce /i, "")
           .replace(/ Laptop GPU/i, "")
-          .trim() || "WebGL2 GPU";
+          .trim() || "WebGL2 (Adapter Masked)";
       }
     } catch (_) {}
   }
@@ -2163,6 +2370,7 @@ uniform sampler2D u_prevTex;
 uniform vec2 u_res;
 uniform float u_time;
 uniform int u_preset;
+uniform int u_tintMode;
 uniform float u_fx;
 uniform float u_blastRate;
 uniform float u_audioBass;
@@ -2201,7 +2409,9 @@ void main() {
     vec4 srcAbove = texture(u_textTex, dripUv);
 
     float rainPulse = 0.84 + 0.16 * sin(u_time * 9.0 + colId * 3.7 + v_uv.y * 45.0);
-    vec3 matrixTint = mix(vec3(0.10, 1.0, 0.58), vec3(0.25, 0.92, 1.0), hash11(colId * 3.1));
+    vec3 matrixTint = (u_tintMode == 1)
+      ? mix(vec3(1.0, 0.84, 0.04), vec3(1.0, 0.96, 0.52), hash11(colId * 3.1))
+      : mix(vec3(0.10, 1.0, 0.58), vec3(0.25, 0.92, 1.0), hash11(colId * 3.1));
 
     vec3 spawnedWake = srcAbove.rgb * srcAbove.a * matrixTint * (0.52 + 0.22 * u_audioBass) * clamp(fx, 0.0, 1.35);
     trail = max(prevDrip * 0.875 * rainPulse, spawnedWake);
@@ -2209,7 +2419,8 @@ void main() {
     fragColor = vec4(max(trail * 0.88, currentLit), live.a);
   } else if (u_preset == 2) {
     vec3 prev = texture(u_prevTex, v_uv).rgb;
-    vec3 p7Decay = vec3(0.58, 0.85, 0.73) * clamp(0.66 + 0.22 * fx, 0.0, 0.91);
+    vec3 baseDecay = (u_tintMode == 1) ? vec3(0.90, 0.76, 0.18) : vec3(0.58, 0.85, 0.73);
+    vec3 p7Decay = baseDecay * clamp(0.66 + 0.22 * fx, 0.0, 0.91);
     trail = prev * p7Decay;
     vec3 currentLit = live.rgb * live.a;
     fragColor = vec4(max(trail, currentLit), live.a);
@@ -2218,7 +2429,9 @@ void main() {
     float zoomAmt = (0.0025 + 0.006 * clamp(drive, 0.0, 1.4)) * fx;
     vec2 zoomUv = center + (v_uv - center) * (1.0 - zoomAmt);
     vec3 prevZoom = texture(u_prevTex, clamp(zoomUv, vec2(0.001), vec2(0.999))).rgb;
-    vec3 neonShift = vec3(prevZoom.r * 0.84, prevZoom.g * 0.72, prevZoom.b * 0.88);
+    vec3 neonShift = (u_tintMode == 1)
+      ? vec3(prevZoom.r * 0.90, prevZoom.g * 0.78, prevZoom.b * 0.16)
+      : vec3(prevZoom.r * 0.84, prevZoom.g * 0.72, prevZoom.b * 0.88);
     vec3 currentLit = live.rgb * live.a;
     fragColor = vec4(max(neonShift, currentLit), live.a);
   }
@@ -2236,6 +2449,7 @@ uniform sampler2D u_audioTex;
 uniform vec2 u_res;
 uniform float u_time;
 uniform int u_preset;
+uniform int u_tintMode;
 uniform int u_viewMode;
 uniform float u_headerSplit;
 uniform float u_fx;
@@ -2287,7 +2501,7 @@ void main() {
   // Fast raw-terminal blit path when FX == 0% (zero bloom, zero warp, minimal GPU cost)
   if (fx < 0.02) {
     vec4 rawT = texture(u_textTex, v_uv);
-    vec3 flatBg = vec3(0.015, 0.022, 0.032);
+    vec3 flatBg = (u_tintMode == 1) ? vec3(0.014, 0.013, 0.008) : vec3(0.015, 0.022, 0.032);
     fragColor = vec4(mix(flatBg, rawT.rgb, rawT.a), 1.0);
     return;
   }
@@ -2317,7 +2531,8 @@ void main() {
 
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
     float bezelDist = max(max(-uv.x, uv.x - 1.0), max(-uv.y, uv.y - 1.0));
-    vec3 bezel = vec3(0.015, 0.02, 0.028) * exp(-bezelDist * 45.0);
+    vec3 bezelBase = (u_tintMode == 1) ? vec3(0.020, 0.017, 0.006) : vec3(0.015, 0.02, 0.028);
+    vec3 bezel = bezelBase * exp(-bezelDist * 45.0);
     fragColor = vec4(bezel, 1.0);
     return;
   }
@@ -2411,18 +2626,30 @@ void main() {
 
   if (u_preset == 0) {
     float hum = 0.5 + 0.5 * sin(uv.y * 6.2831 - u_time * 1.9);
-    bg = vec3(0.016, 0.020, 0.026) + vec3(0.008, 0.012, 0.015) * pow(hum, 4.0) * fx;
+    if (u_tintMode == 1) {
+      bg = vec3(0.013, 0.012, 0.007) + vec3(0.018, 0.014, 0.002) * pow(hum, 4.0) * fx;
+    } else {
+      bg = vec3(0.016, 0.020, 0.026) + vec3(0.008, 0.012, 0.015) * pow(hum, 4.0) * fx;
+    }
   } else if (u_preset == 1) {
     vec2 grid = abs(fract(uv * vec2(48.0, 28.0)) - 0.5);
     float gLine = smoothstep(0.48, 0.5, max(grid.x, grid.y));
     float laser = exp(-abs(uv.y - fract(-u_time * 0.18)) * 55.0);
-    bg = vec3(0.010, 0.016, 0.024) + vec3(0.0, 0.045, 0.055) * gLine * min(fx, 1.0);
-    bg += vec3(0.02, 0.10, 0.12) * laser * min(fx, 1.2);
-    if (uv.y < fftAtX * 0.22 * min(fx, 1.3)) {
-      bg += vec3(0.0, 0.06, 0.08) * (1.0 - uv.y / max(0.01, fftAtX * 0.22));
+    if (u_tintMode == 1) {
+      bg = vec3(0.009, 0.009, 0.005) + vec3(0.088, 0.070, 0.004) * gLine * min(fx, 1.0);
+      bg += vec3(0.18, 0.145, 0.010) * laser * min(fx, 1.2);
+      if (uv.y < fftAtX * 0.22 * min(fx, 1.3)) {
+        bg += vec3(0.12, 0.095, 0.005) * (1.0 - uv.y / max(0.01, fftAtX * 0.22));
+      }
+    } else {
+      bg = vec3(0.010, 0.016, 0.024) + vec3(0.0, 0.045, 0.055) * gLine * min(fx, 1.0);
+      bg += vec3(0.02, 0.10, 0.12) * laser * min(fx, 1.2);
+      if (uv.y < fftAtX * 0.22 * min(fx, 1.3)) {
+        bg += vec3(0.0, 0.06, 0.08) * (1.0 - uv.y / max(0.01, fftAtX * 0.22));
+      }
     }
   } else if (u_preset == 2) {
-    bg = vec3(0.008, 0.030, 0.022);
+    bg = (u_tintMode == 1) ? vec3(0.010, 0.009, 0.005) : vec3(0.008, 0.030, 0.022);
     vec2 div = uv * vec2(10.0, 8.0);
     vec2 fDiv = abs(fract(div) - 0.5);
     float majorGrid = 1.0 - smoothstep(0.0, 0.022, min(fDiv.x, fDiv.y));
@@ -2430,16 +2657,22 @@ void main() {
     float centerAxes = (abs(uv.x - 0.5) < 0.008 || abs(uv.y - 0.5) < 0.01) ? 1.0 : 0.0;
     float minorTicks = (1.0 - smoothstep(0.0, 0.06, min(subDiv.x, subDiv.y))) * centerAxes;
 
-    vec3 gratColor = mix(vec3(0.04, 0.16, 0.11), vec3(0.24, 0.15, 0.05), 0.45);
+    vec3 gratColor = (u_tintMode == 1)
+      ? vec3(0.21, 0.165, 0.03)
+      : mix(vec3(0.04, 0.16, 0.11), vec3(0.24, 0.15, 0.05), 0.45);
     bg += gratColor * (majorGrid * 0.55 + minorTicks * 0.75) * min(fx, 1.2);
 
     float waveY = 0.46 + waveAtX * 0.22 * min(fx, 1.35);
     float beamDist = abs(uv.y - waveY);
     float scopeCore = exp(-beamDist * 250.0);
     float scopeHalo = exp(-beamDist * 34.0) * (0.26 + 0.25 * u_audioMid);
-    bg += (vec3(0.58, 1.0, 0.84) * scopeCore * 0.48 + vec3(0.08, 0.68, 0.44) * scopeHalo) * min(fx, 1.35);
+    vec3 coreCol = (u_tintMode == 1) ? vec3(1.0, 0.92, 0.24) : vec3(0.58, 1.0, 0.84);
+    vec3 haloCol = (u_tintMode == 1) ? vec3(0.88, 0.66, 0.03) : vec3(0.08, 0.68, 0.44);
+    bg += (coreCol * scopeCore * 0.52 + haloCol * scopeHalo) * min(fx, 1.35);
   } else {
-    bg = mix(vec3(0.025, 0.008, 0.048), vec3(0.008, 0.020, 0.045), uv.y);
+    bg = (u_tintMode == 1)
+      ? mix(vec3(0.016, 0.013, 0.004), vec3(0.006, 0.006, 0.004), uv.y)
+      : mix(vec3(0.025, 0.008, 0.048), vec3(0.008, 0.020, 0.045), uv.y);
     float horizonY = 0.36 + u_audioBass * 0.035 * min(fx, 1.3);
     if (uv.y < horizonY) {
       float py = max(0.015, horizonY - uv.y);
@@ -2448,19 +2681,25 @@ void main() {
       float gx = 1.0 - smoothstep(0.0, 0.06, abs(fract(xProj) - 0.5));
       float gz = 1.0 - smoothstep(0.0, 0.07, abs(fract(z - u_time * (0.8 + u_blastRate + u_audioBass)) - 0.5));
       float fade = smoothstep(horizonY, 0.02, uv.y);
-      bg += vec3(0.48 + u_audioBass * 0.35, 0.06, 0.42) * max(gx, gz) * fade * 0.45 * min(fx, 1.25);
+      vec3 gridCol = (u_tintMode == 1)
+        ? vec3(0.78 + u_audioBass * 0.30, 0.62, 0.02)
+        : vec3(0.48 + u_audioBass * 0.35, 0.06, 0.42);
+      bg += gridCol * max(gx, gz) * fade * 0.46 * min(fx, 1.25);
     }
     float eqTop = horizonY + fftAtX * 0.14 * min(fx, 1.3);
     if (uv.y >= horizonY && uv.y < eqTop) {
-      bg += vec3(0.32, 0.05, 0.28) * (1.0 - (uv.y - horizonY) / max(0.005, eqTop - horizonY)) * 0.45;
+      vec3 eqCol = (u_tintMode == 1) ? vec3(0.50, 0.39, 0.02) : vec3(0.32, 0.05, 0.28);
+      bg += eqCol * (1.0 - (uv.y - horizonY) / max(0.005, eqTop - horizonY)) * 0.45;
     }
   }
 
   // Suppress old feedback ghosting directly underneath crisp foreground glyph interiors so huge fast text never smears
   vec3 col = bg + trail * (0.54 * (1.0 - tC.a * 0.72)) + bloom;
 
-  if (u_preset == 3 && fx > 0.1) {
-    vec3 neonGrad = mix(vec3(1.0, 0.38, 0.82), vec3(0.35, 0.96, 1.0), fract(uv.y * 2.2 - u_time * 0.25));
+  if (u_preset == 3 && fx > 0.1 && (u_tintMode == 0 || u_tintMode == 1)) {
+    vec3 neonGrad = (u_tintMode == 1)
+      ? mix(vec3(1.0, 0.84, 0.04), vec3(1.0, 0.98, 0.72), fract(uv.y * 2.2 - u_time * 0.25))
+      : mix(vec3(1.0, 0.38, 0.82), vec3(0.35, 0.96, 1.0), fract(uv.y * 2.2 - u_time * 0.25));
     float luma = dot(crispGlyph, vec3(0.299, 0.587, 0.114));
     crispGlyph = mix(crispGlyph, crispGlyph * 0.55 + neonGrad * luma * 0.85, 0.38 * min(fx, 1.2));
   }
@@ -2468,12 +2707,16 @@ void main() {
   col = (max(col, crispGlyph) + crispGlyph * (0.22 + 0.16 * u_audioBass) * fx) * drumSideShade;
 
   if (shockRing > 0.002) {
-    vec3 ringCol = u_preset == 3 ? vec3(1.0, 0.32, 0.78) : vec3(0.35, 0.95, 1.0);
+    vec3 ringCol = (u_tintMode == 1) ? vec3(1.0, 0.85, 0.08)
+                 : (u_tintMode == 2 ? vec3(1.0, 0.72, 0.16)
+                 : (u_tintMode == 3 ? vec3(0.22, 1.0, 0.45)
+                 : (u_preset == 3 ? vec3(1.0, 0.32, 0.78) : vec3(0.35, 0.95, 1.0))));
     col += ringCol * shockRing * 0.42 * fx;
   }
 
   if (abs(sliceGlitch) > 0.008) {
-    col = mix(col, col.gbr + vec3(0.08, 0.0, 0.06), 0.35);
+    vec3 glitchTint = (u_tintMode == 1) ? vec3(col.r, col.g * 0.85, 0.05) : (col.gbr + vec3(0.08, 0.0, 0.06));
+    col = mix(col, glitchTint, 0.35);
   }
 
   float scanFreq = u_res.y * 0.5;
@@ -2489,7 +2732,8 @@ void main() {
     col *= mix(vec3(1.0), mask, 0.45 * min(fx, 1.0));
   }
 
-  col += vec3(0.20, 0.38, 0.35) * u_flashPulse * 0.32 * min(fx, 1.2);
+  vec3 flashCol = (u_tintMode == 1) ? vec3(0.45, 0.37, 0.04) : vec3(0.20, 0.38, 0.35);
+  col += flashCol * u_flashPulse * 0.32 * min(fx, 1.2);
 
   vec2 vigUv = uv * (1.0 - uv.yx);
   float vig = pow(max(0.0, vigUv.x * vigUv.y * 16.0), 0.16 * min(fx, 1.2));
@@ -2497,7 +2741,8 @@ void main() {
 
   if ((u_preset == 0 || u_preset == 2) && fx > 0.1) {
     float sheen = exp(-length(uv - vec2(0.14, 0.88)) * 7.5) * 0.035 * min(fx, 1.0);
-    col += vec3(0.7, 0.88, 1.0) * sheen;
+    vec3 sheenCol = (u_tintMode == 1) ? vec3(1.0, 0.92, 0.55) : vec3(0.7, 0.88, 1.0);
+    col += sheenCol * sheen;
   }
 
   fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
@@ -2553,27 +2798,70 @@ void main() {
     const fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return { fbo, tex };
+    return { fbo, tex, complete };
   }
 
-  function resizePipelines() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-    const w = Math.max(320, Math.floor(window.innerWidth * dpr));
-    const h = Math.max(200, Math.floor(window.innerHeight * dpr));
+  function initGlPrograms() {
+    if (!gl || state.contextLost) return;
+    feedbackProg = createProgram(VERT_SRC, FEEDBACK_FRAG);
+    compositeProg = createProgram(VERT_SRC, COMPOSITE_FRAG);
+    emptyVao = gl.createVertexArray();
+    fbUniforms = {};
+    compUniforms = {};
 
-    if (glCanvas.width === w && glCanvas.height === h) return;
+    if (feedbackProg) {
+      for (const u of [
+        "u_textTex", "u_prevTex", "u_res", "u_time", "u_preset",
+        "u_tintMode", "u_fx", "u_blastRate", "u_audioBass",
+      ]) {
+        fbUniforms[u] = gl.getUniformLocation(feedbackProg, u);
+      }
+    }
+    if (compositeProg) {
+      for (const u of [
+        "u_textTex", "u_feedbackTex", "u_audioTex", "u_res", "u_time", "u_preset",
+        "u_tintMode", "u_viewMode", "u_headerSplit", "u_fx",
+        "u_blastRate", "u_stepPulse", "u_nodePulse", "u_glitchBurst",
+        "u_flashPulse", "u_degauss", "u_shockTime", "u_shockCenter",
+        "u_audioBass", "u_audioMid", "u_audioHigh",
+      ]) {
+        compUniforms[u] = gl.getUniformLocation(compositeProg, u);
+      }
+    }
+  }
+
+  function resizePipelines(forceRebuild = false) {
+    const cssW = Math.max(320, window.innerWidth || 320);
+    const cssH = Math.max(200, window.innerHeight || 200);
+    const rawDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    let w = Math.max(320, Math.floor(cssW * rawDpr));
+    let h = Math.max(200, Math.floor(cssH * rawDpr));
+
+    // Bound 4K/5K render-target VRAM below ~30 MiB total across textTex + ping-pong FBOs
+    let scale = 1.0;
+    if (w > MAX_RENDER_WIDTH) scale = Math.min(scale, MAX_RENDER_WIDTH / w);
+    if (w * h * scale * scale > MAX_RENDER_PIXELS) {
+      scale = Math.min(scale, Math.sqrt(MAX_RENDER_PIXELS / (w * h)));
+    }
+    if (scale < 1.0) {
+      w = Math.max(320, Math.floor(w * scale));
+      h = Math.max(200, Math.floor(h * scale));
+    }
+
+    if (!forceRebuild && glCanvas.width === w && glCanvas.height === h) return;
 
     glCanvas.width = w;
     glCanvas.height = h;
     textCanvas.width = w;
     textCanvas.height = h;
-    textCanvas._dpr = dpr;
+    textCanvas._dpr = w / cssW;
     state.textDirty = true;
 
-    if (!gl) return;
+    if (!gl || state.contextLost) return;
 
-    if (!textTex) textTex = gl.createTexture();
+    if (!textTex || forceRebuild) textTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, textTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
@@ -2583,7 +2871,7 @@ void main() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    if (!audioTex) {
+    if (!audioTex || forceRebuild) {
       audioTex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, audioTex);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -2594,44 +2882,73 @@ void main() {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     }
 
-    if (fboA) { gl.deleteFramebuffer(fboA); gl.deleteTexture(texA); }
-    if (fboB) { gl.deleteFramebuffer(fboB); gl.deleteTexture(texB); }
+    if (fboA) { try { gl.deleteFramebuffer(fboA); gl.deleteTexture(texA); } catch (_) {} }
+    if (fboB) { try { gl.deleteFramebuffer(fboB); gl.deleteTexture(texB); } catch (_) {} }
 
     const rtA = makeRenderTarget(w, h);
     const rtB = makeRenderTarget(w, h);
     fboA = rtA.fbo; texA = rtA.tex;
     fboB = rtB.fbo; texB = rtB.tex;
+    state.fboReady = Boolean(rtA.complete && rtB.complete);
   }
 
   if (gl) {
-    feedbackProg = createProgram(VERT_SRC, FEEDBACK_FRAG);
-    compositeProg = createProgram(VERT_SRC, COMPOSITE_FRAG);
-    emptyVao = gl.createVertexArray();
+    initGlPrograms();
 
-    for (const u of ["u_textTex", "u_prevTex", "u_res", "u_time", "u_preset", "u_fx", "u_blastRate", "u_audioBass"]) {
-      fbUniforms[u] = gl.getUniformLocation(feedbackProg, u);
-    }
-    for (const u of [
-      "u_textTex", "u_feedbackTex", "u_audioTex", "u_res", "u_time", "u_preset",
-      "u_viewMode", "u_headerSplit", "u_fx",
-      "u_blastRate", "u_stepPulse", "u_nodePulse", "u_glitchBurst",
-      "u_flashPulse", "u_degauss", "u_shockTime", "u_shockCenter",
-      "u_audioBass", "u_audioMid", "u_audioHigh",
-    ]) {
-      compUniforms[u] = gl.getUniformLocation(compositeProg, u);
-    }
+    glCanvas.addEventListener("webglcontextlost", (ev) => {
+      ev.preventDefault();
+      state.contextLost = true;
+      state.fboReady = false;
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+    });
+
+    glCanvas.addEventListener("webglcontextrestored", () => {
+      state.contextLost = false;
+      textTex = null;
+      audioTex = null;
+      fboA = null; texA = null;
+      fboB = null; texB = null;
+      initGlPrograms();
+      resizePipelines(true);
+      state.textDirty = true;
+      scheduleNextFrame();
+    });
   }
 
-  window.addEventListener("resize", resizePipelines);
-  resizePipelines();
+  window.addEventListener("resize", () => resizePipelines(false));
+  resizePipelines(false);
 
   // =========================================================================
   // 10. ECO-GOVERNED MAIN RENDER LOOP + DIRTY-GATED TEXTURE UPLOADS
   // =========================================================================
+  let rafId = 0;
   let lastDrawMs = 0;
   let fpsFrames = 0;
   let fpsTimerMs = performance.now();
   let pingPong = false;
+
+  function scheduleNextFrame() {
+    if (!rafId && !document.hidden && !state.contextLost) {
+      rafId = requestAnimationFrame(renderFrame);
+    }
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+    } else {
+      lastDrawMs = 0;
+      state.textDirty = true;
+      pollTelemetry();
+      scheduleNextFrame();
+    }
+  });
 
   function targetFrameIntervalMs(nowMs) {
     if (state.fpsMode === "MAX") return 0;
@@ -2653,11 +2970,11 @@ void main() {
   }
 
   function renderFrame(nowMs) {
-    requestAnimationFrame(renderFrame);
-    if (document.hidden) {
-      lastDrawMs = nowMs;
+    rafId = 0;
+    if (document.hidden || state.contextLost) {
       return;
     }
+    scheduleNextFrame();
 
     const minInterval = targetFrameIntervalMs(nowMs);
     if (minInterval > 0 && (nowMs - lastDrawMs) < minInterval) {
@@ -2694,7 +3011,7 @@ void main() {
       renderTextTexture(nowMs, dtSec);
     }
 
-    if (!gl || !feedbackProg || !compositeProg) return;
+    if (!gl || !compositeProg) return;
 
     const w = glCanvas.width;
     const h = glCanvas.height;
@@ -2716,9 +3033,9 @@ void main() {
 
     gl.bindVertexArray(emptyVao);
 
-    let writeTex = pingPong ? texB : texA;
-    // Fast-path: skip Pass 1 feedback FBO completely when FX == 0%
-    if (state.fxIntensity >= 0.02) {
+    let writeTex = textTex;
+    // Fast-path: skip Pass 1 feedback FBO completely when FX == 0% or FBO incomplete
+    if (state.fxIntensity >= 0.02 && state.fboReady && feedbackProg) {
       const readTex = pingPong ? texA : texB;
       const writeFbo = pingPong ? fboB : fboA;
       writeTex = pingPong ? texB : texA;
@@ -2739,6 +3056,7 @@ void main() {
       gl.uniform2f(fbUniforms.u_res, w, h);
       gl.uniform1f(fbUniforms.u_time, tSec);
       gl.uniform1i(fbUniforms.u_preset, state.preset);
+      gl.uniform1i(fbUniforms.u_tintMode, state.tintMode);
       gl.uniform1f(fbUniforms.u_fx, state.fxIntensity);
       gl.uniform1f(fbUniforms.u_blastRate, state.blastRate);
       gl.uniform1f(fbUniforms.u_audioBass, state.audioBass);
@@ -2766,6 +3084,7 @@ void main() {
     gl.uniform2f(compUniforms.u_res, w, h);
     gl.uniform1f(compUniforms.u_time, tSec);
     gl.uniform1i(compUniforms.u_preset, state.preset);
+    gl.uniform1i(compUniforms.u_tintMode, state.tintMode);
     gl.uniform1i(compUniforms.u_viewMode, Math.max(0, VIEW_MODES.indexOf(state.viewMode)));
     gl.uniform1f(compUniforms.u_headerSplit, state.headerSplitUv || 0.88);
     gl.uniform1f(compUniforms.u_fx, state.fxIntensity);
@@ -2784,10 +3103,10 @@ void main() {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  ingestLogChunk("[LogBlaster] Audio-Reactive WebGL2 GPU Log Visualizer ready (1-4 Shaders | V View | / Filter | E Errors | M Synth | A Audio | B Blast)\n");
-  ingestLogChunk(`[LogBlaster] View: ${state.viewMode} | WebGL2: ${state.shaderRendererName} | FPS: ${state.fpsMode} | Redaction: ${state.redactEnabled ? "ON" : "OFF"}\n`);
+  ingestLogChunk("[LogBlaster] Audio-Reactive WebGL2 GPU Log Visualizer ready (1-4 Shaders | V View | Y Comfy B&Y | T Tint | / Filter | E Errors | M Synth | A Audio | B Blast)\n");
+  ingestLogChunk(`[LogBlaster] View: ${state.viewMode} | Palette: ${TINT_NAMES[state.tintMode]} | WebGL2: ${state.shaderRendererName} | FPS: ${state.fpsMode} | Redaction: ${state.redactEnabled ? "ON" : "OFF"}\n`);
   connectComfySocket();
-  requestAnimationFrame(renderFrame);
+  scheduleNextFrame();
 })();
 </script>
 </body>
