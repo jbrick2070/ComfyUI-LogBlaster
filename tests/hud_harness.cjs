@@ -118,6 +118,9 @@ async function makeHud(options = {}) {
   }
   Object.assign(window, { location, innerWidth: 1280, innerHeight: 720, devicePixelRatio: 1,
     matchMedia: () => motionQuery, AudioContext: AudioContextStub });
+  // A top-level page is its own top; options.framed puts it in a frame (the dock).
+  window.self = window;
+  window.top = options.framed ? new EventStub() : window;
   const context = vm.createContext({
     window, document, location, URL, URLSearchParams, AbortController,
     crypto: { randomUUID: () => "audit-stub" },
@@ -140,8 +143,8 @@ async function makeHud(options = {}) {
       close() {}
     },
     BroadcastChannel: class extends EventStub {
-      constructor(name) { super(); this.name = name; channels.push(this); }
-      postMessage() {}
+      constructor(name) { super(); this.name = name; this.posts = []; channels.push(this); }
+      postMessage(msg) { this.posts.push(msg); }
       close() {}
     },
     async fetch(url, options = {}) {
@@ -325,25 +328,53 @@ async function verifyProductImprovements() {
   // a wrapped live line under the header (Codex QA of 8778e8f, at 1280x310). Rendered,
   // not computed: every row of a long live line must sit below the clip at logTop,
   // in both views that draw it giant, in both anchors.
-  for (const view of ["CASCADE", "DRUM"]) {
-    for (const search of ["", "?anchor=bottom"]) {
+  // Three rows too (Codex QA of 61de5a9): no anchor has room for three rows at full
+  // size in 1280x310, so the live line's font shrinks to fit.
+  for (const [view, search, length] of [["CASCADE", "", 200], ["CASCADE", "?anchor=bottom", 200],
+                                        ["DRUM", "", 200], ["DRUM", "?anchor=bottom", 200],
+                                        ["CASCADE", "", 400], ["CASCADE", "?anchor=bottom", 400],
+                                        ["DRUM", "", 400]]) {
+    {
       const short = await makeHud({ search });
       short.state.viewMode = view;
       short.textCanvas.width = 1280;
       short.textCanvas.height = 310;
       short.element("controlDock").rect = { top: 261, height: 37 };
-      short.ingestLogChunk(`${"Q".repeat(200)}\n`);
+      short.ingestLogChunk(`${"Q".repeat(length)}\n`);
       // A new line slides in from below; measure once it has settled.
       for (let frame = 0; frame < 4; frame++) short.renderTextTexture(2000 + frame * 1000, 1.0);
       short.drawsAt.length = 0;
       short.renderTextTexture(7000, 1.0);
       const rows = short.drawsAt.filter(d => /^Q+$/.test(d.text) && d.text.length > 20);
-      assert.ok(rows.length >= 2, `${view} ${search}: the live line wraps (${rows.length} rows)`);
+      const label = `${view} ${search} ${length} chars`;
+      assert.ok(rows.length >= (length > 300 ? 3 : 2), `${label}: the live line wraps (${rows.length} rows)`);
+      assert.equal(rows.map(r => r.text.length).reduce((a, b) => a + b, 0), length, `${label}: every character drawn`);
       for (const row of rows) {
         const px = Number(/(\d+(?:\.\d+)?)px/.exec(row.font)?.[1] || 0);
-        assert.ok(row.y - px * 0.8 >= 100, `${view} ${search}: a live row's top at ${row.y - px * 0.8} is under the header`);
+        assert.ok(row.y - px * 0.8 >= 100, `${label}: a live row's top at ${row.y - px * 0.8} is under the header`);
       }
     }
+  }
+  {
+    // FLAT draws its live line at the log's own size, so it keeps the 60% line where
+    // CASCADE, with its giant line, needs more room (Codex QA of 61de5a9).
+    const flat = await makeHud();
+    flat.state.viewMode = "FLAT";
+    flat.element("controlDock").rect = { top: 351, height: 37 };
+    assert.equal(flat.getLogBottom(400, 90, 1280), 240, "FLAT keeps the 60% line");
+    flat.state.viewMode = "CASCADE";
+    assert.equal(flat.getLogBottom(400, 90, 1280), 275, "CASCADE makes room for its giant line");
+  }
+  // Every answer a HUD gives says whether it sits in a frame, top level and docked
+  // (Codex QA of 61de5a9: with the flags deleted, both harnesses still passed).
+  for (const framed of [false, true]) {
+    const said = await makeHud({ framed });
+    const hudBus = said.channels.find(c => String(c.name).startsWith("comfy-logblaster-bus:"));
+    await hudBus.emit("message", { data: { type: "ping" } });
+    const answers = hudBus.posts.filter(m => m.type === "hello" || m.type === "pong");
+    assert.ok(answers.some(m => m.type === "hello") && answers.some(m => m.type === "pong"),
+      "a hello on load and a pong on a ping");
+    assert.ok(answers.every(m => m.embedded === framed), `framed=${framed}: every answer says so`);
   }
   hud.state.activeNodeTitle = "Long workflow title ".repeat(6);
   hud.state.filterQuery = "needle";

@@ -2600,9 +2600,19 @@
     // Never so high that the live line, wrapped to its three rows at full size, would
     // run under the header: a short window (the in-app dock is one) keeps it lower, as
     // far down as the foot. At 1280x310 the 60% line clipped two rows (Codex QA of 8778e8f).
-    const heroFs = heroMaxFontPx(vw);
-    const heroRoom = 3 * Math.round(heroFs * 1.22) + Math.max(3, Math.round(heroFs * 0.24)) + 6;
-    return Math.max(logTop, Math.min(bottom, Math.max(Math.round(vh * 0.6), logTop + heroRoom)));
+    // Only CASCADE and DRUM draw it giant; FLAT keeps the log's own size, and its room.
+    const giant = state.viewMode === "CASCADE" || state.viewMode === "DRUM";
+    const liveFs = giant ? heroMaxFontPx(vw) : state.fontSize;
+    const liveRoom = 3 * Math.round(liveFs * 1.22) + Math.max(3, Math.round(liveFs * 0.24)) + 6;
+    return Math.max(logTop, Math.min(bottom, Math.max(Math.round(vh * 0.6), logTop + liveRoom)));
+  }
+
+  /** The largest live-line font whose three rows fit `availH`, the room between
+   *  the header and the live line's foot (6px above it). A window too short for
+   *  the full size shrinks the line instead of clipping it, at either anchor
+   *  (Codex QA of 61de5a9: three rows at 1280x310 lost their first). */
+  function heroFitFontPx(availH) {
+    return Math.floor((availH - 8) / (3 * 1.22 + 0.24));
   }
 
   function renderTextTexture(nowMs, dtSec) {
@@ -2819,8 +2829,8 @@
     if (state.viewMode === "CASCADE" || state.viewMode === "DRUM") {
       // Giant Foreground Live Stream -> Progressively Shrinking Perspective Trail
       const isDrum = state.viewMode === "DRUM";
-      const heroMaxFs = heroMaxFontPx(vw);
       const minTrailFs = Math.max(8.5, Math.round(fs * 0.64 * 2) / 2);
+      const heroMaxFs = Math.max(minTrailFs, Math.min(heroMaxFontPx(vw), heroFitFontPx(availH)));
       const maxIndent = isDrum ? vw * 0.125 : vw * 0.05;
 
       // Subtle 3D perspective side guide rails + Hero Stage deck bar

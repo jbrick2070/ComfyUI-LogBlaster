@@ -170,13 +170,31 @@ async function makeExtension(useFileUrl = true, { desktop = false, observers = 0
   const twoHuds = await makeExtension(true, { auto: true });
   twoHuds.harness.openEmbeddedDock();
   twoHuds.channels[0].listener({ data: { type: "pong", embedded: true } });
-  twoHuds.channels[0].listener({ data: { type: "pong" } });
+  twoHuds.channels[0].listener({ data: { type: "pong", embedded: false } });
   twoHuds.harness.dock().querySelector("div").children[1].children[1].listeners.click();
   assert.equal(twoHuds.harness.dock(), null, "X closes the dock");
   assert.equal(twoHuds.harness.isHudWindowAlive(), true, "the HUD tab still counts");
   await twoHuds.api.queuePrompt(0, {});
   assert.equal(twoHuds.openCount(), 0, "a run wakes the HUD tab instead of opening another");
   assert.ok(twoHuds.posts.some(m => m.type === "wake"));
+
+  // A HUD too old to say where it sits (a dock left running in another tab across
+  // an update) is not counted, so it cannot stop Pop Out (Codex QA of 61de5a9).
+  const oldDock = await makeExtension();
+  oldDock.harness.openEmbeddedDock();
+  oldDock.channels[0].listener({ data: { type: "pong" } });
+  oldDock.channels[0].listener({ data: { type: "hello" } });
+  oldDock.harness.dock().querySelector("div").children[1].children[0].listeners.click();
+  assert.equal(oldDock.openCount(), 1, "an unflagged answer does not stop Pop Out");
+
+  // The tracked popup, navigated away from the HUD, must not hide a HUD that is
+  // open in another tab (Codex QA of 61de5a9).
+  const strayPopup = await makeExtension(true, { auto: true });
+  strayPopup.harness.setPopup({ closed: false, location: { href: "https://example.test/comfy/elsewhere" }, focus() {} });
+  strayPopup.channels[0].listener({ data: { type: "pong", embedded: false } });
+  assert.equal(strayPopup.harness.isHudWindowAlive(), true, "the HUD tab counts past a stray popup");
+  await strayPopup.api.queuePrompt(0, {});
+  assert.equal(strayPopup.openCount(), 0, "so a run opens no second HUD");
 
   // Comfy Desktop hands every window.open to the system: never an empty URL
   // (about:blank -> "you'll need a new app to open this about link").

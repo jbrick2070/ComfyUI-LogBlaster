@@ -88,7 +88,9 @@ function isHudPopup(ref) {
 }
 
 function isHudWindowAlive() {
-  if (popupRef && !popupRef.closed) return isHudPopup(popupRef);
+  // The tracked popup is proof only when it still shows the HUD; one navigated
+  // elsewhere must not hide a HUD in another tab (Codex QA of 61de5a9).
+  if (popupRef && !popupRef.closed && isHudPopup(popupRef)) return true;
   if (Date.now() - lastPongMs < 3800) return true;
   if (dockEl && document.body.contains(dockEl)) return true;
   return false;
@@ -395,10 +397,13 @@ app.registerExtension({
       bus = new BroadcastChannel(`comfy-logblaster-bus:${SERVER_BASE}`);
       bus.addEventListener("message", (ev) => {
         const msgType = ev.data?.type;
-        // Only a HUD in a window of its own counts as one: a HUD in a frame (this
-        // page's dock, known from dockEl) says so. Taking the dock's answer for a
-        // window made Pop Out close the dock and open nothing (2026-10-30).
-        const separateWindow = ev.data?.embedded !== true;
+        // Only a HUD that says it is in a window of its own counts as one. A HUD in
+        // a frame (this page's dock, known from dockEl) says embedded: true; taking
+        // the dock's answer for a window made Pop Out close the dock and open nothing
+        // (2026-10-30). A HUD too old to say either way is not counted either: an old
+        // dock left running in another tab across an update must not stop Pop Out
+        // (Codex QA of 61de5a9). The worst case is a twin for an old HUD window.
+        const separateWindow = ev.data?.embedded === false;
         if (msgType === "pong") {
           if (separateWindow) lastPongMs = Date.now();
         } else if (msgType === "hello") {
