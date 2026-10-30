@@ -245,6 +245,9 @@ function openLogBlasterWindow(focusIfOpen = false) {
   // window.open by name re-attaches it, sends it back to the HUD and raises it.
   // Another HUD's answer, or the popup's own from before it navigated, must not
   // leave the click focusing the wrong page or doing nothing (Codex QA of ed6e097).
+  // A HUD in another tab may stay open beside it: this page cannot raise that tab,
+  // and a click must show a HUD, so two is the price (Codex QA of 275eab2 asked for
+  // one; ruled against, since one meant a click that showed nothing).
   const restorePopup = focusIfOpen && popupRef && !popupRef.closed && !isHudPopup(popupRef);
   if (!restorePopup && isHudWindowAlive()) {
     try { bus?.postMessage({ type: "wake", ts: Date.now() }); } catch (_) {}
@@ -276,6 +279,9 @@ function openLogBlasterWindow(focusIfOpen = false) {
     try {
       if (!isHudPopup(opened)) {
         opened.location.href = HUD_URL;
+        if (focusIfOpen) {
+          try { opened.focus(); } catch (_) {}
+        }
       } else {
         try { bus?.postMessage({ type: "wake", ts: Date.now() }); } catch (_) {}
         if (focusIfOpen) {

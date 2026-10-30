@@ -52,7 +52,8 @@ async function makeExtension(useFileUrl = true, { desktop = false, observers = 0
   const timers = [];
   let extension;
   let submit = async () => ({ prompt_id: "first" });
-  const popup = { closed: false, location: { href: "about:blank" }, focus() {} };
+  const popup = { closed: false, location: { href: "about:blank" }, focusCount: 0,
+    focus() { this.focusCount++; } };
   let openCount = 0;
   const api = {
     api_base: "/comfy",
@@ -137,6 +138,9 @@ async function makeExtension(useFileUrl = true, { desktop = false, observers = 0
   env.harness.openLogBlasterWindow(true);
   assert.equal(env.openCount(), 0);
   assert.equal(env.popup.location.href, "https://example.test/comfy/logblaster?view=dual");
+  assert.equal(env.popup.focusCount, 1, "a click raises the open HUD popup");
+  env.harness.openLogBlasterWindow(false);
+  assert.equal(env.popup.focusCount, 1, "a run never steals focus");
   env.popup.location.href = "https://example.test/comfy/another-page";
   assert.equal(env.harness.isHudWindowAlive(), false);
   env.harness.openLogBlasterWindow(true);
@@ -209,6 +213,12 @@ async function makeExtension(useFileUrl = true, { desktop = false, observers = 0
   assert.equal(clicked.openCount(), 1, "the click reopens the popup");
   assert.equal(clicked.opens[0][1], clicked.harness.WINDOW_NAME);
   assert.equal(clicked.popup.location.href, "/comfy/logblaster", "and sends it back to the HUD");
+  assert.equal(clicked.popup.focusCount, 1, "and raises it");
+  // Ruled, not missed: a HUD in another tab may stay open beside the restored
+  // popup. The page cannot raise that tab, and a click must show a HUD, so the
+  // click gives two HUDs rather than none on screen (Codex QA of 275eab2 asked
+  // for one).
+  assert.equal(clicked.openCount(), 1, "exactly one window: our own popup, reopened");
 
   // Comfy Desktop hands every window.open to the system: never an empty URL
   // (about:blank -> "you'll need a new app to open this about link").
