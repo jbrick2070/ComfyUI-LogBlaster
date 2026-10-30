@@ -76,30 +76,34 @@ def _git_commit(pkg_dir: str) -> str:
                 return ""
             git_dir = os.path.normpath(os.path.join(pkg_dir, pointer[len("gitdir:"):].strip()))
         with open(os.path.join(git_dir, "HEAD"), "r", encoding="utf-8") as fh:
-            head = fh.read().strip()
-        sha = head
-        if head.startswith("ref:"):
-            ref = head[len("ref:"):].strip()
-            sha = ""
-            for base in (git_dir, _common_git_dir(git_dir)):
-                loose = os.path.join(base, *ref.split("/"))
-                if os.path.isfile(loose):
-                    with open(loose, "r", encoding="utf-8") as fh:
-                        sha = fh.read().strip()
-                    break
-                packed = os.path.join(base, "packed-refs")
-                if os.path.isfile(packed):
-                    with open(packed, "r", encoding="utf-8") as fh:
-                        for line in fh:
-                            parts = line.split()
-                            if len(parts) == 2 and parts[1] == ref:
-                                sha = parts[0]
-                                break
-                if sha:
-                    break
+            sha = fh.read().strip()
+        # A symbolic ref may name another (HEAD -> alias -> main); git itself stops
+        # following after five, and so does this.
+        for _ in range(5):
+            if not sha.startswith("ref:"):
+                break
+            sha = _read_ref(git_dir, sha[len("ref:"):].strip())
         return sha[:7] if re.fullmatch(r"[0-9a-f]{40,64}", sha) else ""
     except (OSError, UnicodeDecodeError):
         return ""
+
+
+def _read_ref(git_dir: str, ref: str) -> str:
+    """What a ref holds (a sha, or "ref: <another ref>"), from its loose file or
+    packed-refs, in this git dir or a worktree's shared one; "" when absent."""
+    for base in (git_dir, _common_git_dir(git_dir)):
+        loose = os.path.join(base, *ref.split("/"))
+        if os.path.isfile(loose):
+            with open(loose, "r", encoding="utf-8") as fh:
+                return fh.read().strip()
+        packed = os.path.join(base, "packed-refs")
+        if os.path.isfile(packed):
+            with open(packed, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) == 2 and parts[1] == ref:
+                        return parts[0]
+    return ""
 
 
 def _common_git_dir(git_dir: str) -> str:

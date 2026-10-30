@@ -8,7 +8,7 @@ const inline = html.match(/<script>([\s\S]*)<\/script>/)[1];
 const hook = `\nthis.__hudTest = {state, ingestLogChunk, getViewEndIndex, getFilteredLines,
   handleComfyEvent, pollTelemetry, renderTextTexture, connectComfySocket,
   getTelemetryFreshness, getConnectionStatus, getLogBottom, redactSensitiveText,
-  ensureAudioGraph, playSynthTick,
+  ensureAudioGraph, playSynthTick, textCanvas,
   synthNodes: () => ({audioCtx, synthMasterGain, droneGain, droneOsc})};\n})();`;
 assert.ok(inline.trimEnd().endsWith("})();"));
 const source = inline.trimEnd().replace(/\}\)\(\);$/, hook);
@@ -32,7 +32,7 @@ async function makeHud(options = {}) {
   const storage = options.storage || new Map();
   const motionQuery = new EventStub();
   motionQuery.matches = Boolean(options.reducedMotion);
-  const fetches = [], sockets = [], channels = [], draws = [];
+  const fetches = [], sockets = [], channels = [], draws = [], drawsAt = [];
   const timers = [];
   let nextTimerId = 0;
   const gradient = { addColorStop() {} };
@@ -41,7 +41,13 @@ async function makeHud(options = {}) {
       if (key in target) return target[key];
       if (key === "measureText") return text => ({ width: String(text).length * 8 });
       if (key === "createLinearGradient" || key === "createRadialGradient") return () => gradient;
-      if (key === "fillText" || key === "strokeText") return text => draws.push(String(text));
+      if (key === "fillText" || key === "strokeText") {
+        // Where each piece of text lands, and in what font, for the layout checks.
+        return (text, x, y) => {
+          draws.push(String(text));
+          drawsAt.push({ text: String(text), x, y, font: String(target.font || "") });
+        };
+      }
       return () => {};
     },
     set(target, key, value) { target[key] = value; return true; },
@@ -153,7 +159,7 @@ async function makeHud(options = {}) {
   });
   vm.runInContext(source, context, { filename: "logblaster-inline.js" });
   await new Promise(resolve => setImmediate(resolve));
-  return { ...context.__hudTest, element, window, document, fetches, sockets, channels, draws, audioNodes, timers,
+  return { ...context.__hudTest, element, window, document, fetches, sockets, channels, draws, drawsAt, audioNodes, timers,
     setTime(value) { now = value; }, setNvmlAvailable(value) { nvmlAvailable = value; },
     setFetchFailure(value) { fetchFailure = value; },
     async setReducedMotion(value) { motionQuery.matches = value; await motionQuery.emit("change"); },
@@ -315,10 +321,29 @@ async function verifyProductImprovements() {
     placed.element("controlDock").rect = { top: 752, height: 37 };
     assert.equal(placed.getLogBottom(801, 90), expected, `live line for "${search}"`);
   }
-  {
-    const tiny = await makeHud();
-    tiny.element("controlDock").rect = { top: 300, height: 37 };
-    assert.equal(tiny.getLogBottom(310, 90), 186, "mid-screen on a short window");
+  // A short window (the in-app dock is one) cannot lift the line to 60%: that clipped
+  // a wrapped live line under the header (Codex QA of 8778e8f, at 1280x310). Rendered,
+  // not computed: every row of a long live line must sit below the clip at logTop,
+  // in both views that draw it giant, in both anchors.
+  for (const view of ["CASCADE", "DRUM"]) {
+    for (const search of ["", "?anchor=bottom"]) {
+      const short = await makeHud({ search });
+      short.state.viewMode = view;
+      short.textCanvas.width = 1280;
+      short.textCanvas.height = 310;
+      short.element("controlDock").rect = { top: 261, height: 37 };
+      short.ingestLogChunk(`${"Q".repeat(200)}\n`);
+      // A new line slides in from below; measure once it has settled.
+      for (let frame = 0; frame < 4; frame++) short.renderTextTexture(2000 + frame * 1000, 1.0);
+      short.drawsAt.length = 0;
+      short.renderTextTexture(7000, 1.0);
+      const rows = short.drawsAt.filter(d => /^Q+$/.test(d.text) && d.text.length > 20);
+      assert.ok(rows.length >= 2, `${view} ${search}: the live line wraps (${rows.length} rows)`);
+      for (const row of rows) {
+        const px = Number(/(\d+(?:\.\d+)?)px/.exec(row.font)?.[1] || 0);
+        assert.ok(row.y - px * 0.8 >= 100, `${view} ${search}: a live row's top at ${row.y - px * 0.8} is under the header`);
+      }
+    }
   }
   hud.state.activeNodeTitle = "Long workflow title ".repeat(6);
   hud.state.filterQuery = "needle";

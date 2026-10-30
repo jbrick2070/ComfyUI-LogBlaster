@@ -310,6 +310,14 @@ def test_the_version_names_the_pyproject_release_and_the_checkout_commit(tmp_pat
     (worktree / ".git").write_text(f"gitdir: {wt_git}\n", encoding="utf-8")
     assert init_mod._pack_version(str(worktree)) == "9.8.7 · 0123456"
 
+    # A symbolic ref naming another (HEAD -> alias -> feature) resolves through it
+    # (Codex QA of 8778e8f: one hop only showed the version alone).
+    (git / "HEAD").write_text("ref: refs/heads/alias\n", encoding="utf-8")
+    (git / "refs" / "heads" / "alias").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+    assert init_mod._pack_version(str(pkg)) == "9.8.7 · 0123456"
+    (git / "refs" / "heads" / "alias").write_text("ref: refs/heads/alias\n", encoding="utf-8")
+    assert init_mod._pack_version(str(pkg)) == "9.8.7", "a ref loop ends, showing the version alone"
+
     (git / "HEAD").write_text("ref: refs/heads/nowhere\n", encoding="utf-8")
     assert init_mod._pack_version(str(pkg)) == "9.8.7", "an unresolved ref shows the version alone"
     assert init_mod._pack_version(str(tmp_path / "missing")) == "?"

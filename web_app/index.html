@@ -2179,6 +2179,12 @@
   }
 
   let bus = null;
+  // A HUD inside a frame (ComfyUI's embedded dock) says so with every answer: the
+  // ComfyUI page knows its own dock is open without asking, and must not take the
+  // dock's answer for a separate HUD window (js/log_blaster.js, isHudWindowAlive).
+  const embeddedHud = (() => {
+    try { return window.self !== window.top; } catch (_) { return true; }
+  })();
   try {
     bus = new BroadcastChannel(`comfy-logblaster-bus:${serverBase}`);
     bus.addEventListener("message", (ev) => {
@@ -2186,7 +2192,7 @@
       const m = ev.data;
       if (!m || typeof m !== "object") return;
       if (m.type === "ping") {
-        try { bus.postMessage({ type: "pong", ts: Date.now() }); } catch (_) {}
+        try { bus.postMessage({ type: "pong", ts: Date.now(), embedded: embeddedHud }); } catch (_) {}
       } else if (m.type === "node_map" && m.nodes && typeof m.nodes === "object") {
         receiveNodeMap(m);
       } else if (m.type === "wake") {
@@ -2194,10 +2200,10 @@
         state.textDirty = true;
       }
     });
-    try { bus.postMessage({ type: "hello", ts: Date.now() }); } catch (_) {}
+    try { bus.postMessage({ type: "hello", ts: Date.now(), embedded: embeddedHud }); } catch (_) {}
     busPongTimer = setInterval(() => {
       if (state.shuttingDown || !bus) return;
-      try { bus.postMessage({ type: "pong", ts: Date.now() }); } catch (_) {}
+      try { bus.postMessage({ type: "pong", ts: Date.now(), embedded: embeddedHud }); } catch (_) {}
     }, 1500);
   } catch (_) {}
 
@@ -2571,7 +2577,13 @@
     return end ? value.slice(0, end) + "…" : "";
   }
 
-  function getLogBottom(vh, logTop) {
+  /** The live line's largest font in CASCADE and DRUM: wide windows and big text get
+   *  a bigger one. Shared with getLogBottom, which must leave room for it. */
+  function heroMaxFontPx(vw) {
+    return Math.max(24, Math.min(Math.round(vw * 0.036), Math.round(state.fontSize * 3.25)));
+  }
+
+  function getLogBottom(vh, logTop, vw = window.innerWidth) {
     const dockTop = controlDock.getBoundingClientRect?.().top;
     let controlsTop = Number.isFinite(dockTop) && dockTop > 0 ? dockTop : vh - 48;
     const moreRect = dockMore.open ? dockMoreTools.getBoundingClientRect?.() : null;
@@ -2584,7 +2596,13 @@
     // it. DUAL keeps its background stream full height and centres its hero band instead
     // (see the DUAL layer).
     const midScreen = ANCHOR_MIDDLE && state.viewMode !== "DUAL";
-    return Math.max(logTop, midScreen ? Math.min(bottom, Math.round(vh * 0.6)) : bottom);
+    if (!midScreen) return Math.max(logTop, bottom);
+    // Never so high that the live line, wrapped to its three rows at full size, would
+    // run under the header: a short window (the in-app dock is one) keeps it lower, as
+    // far down as the foot. At 1280x310 the 60% line clipped two rows (Codex QA of 8778e8f).
+    const heroFs = heroMaxFontPx(vw);
+    const heroRoom = 3 * Math.round(heroFs * 1.22) + Math.max(3, Math.round(heroFs * 0.24)) + 6;
+    return Math.max(logTop, Math.min(bottom, Math.max(Math.round(vh * 0.6), logTop + heroRoom)));
   }
 
   function renderTextTexture(nowMs, dtSec) {
@@ -2782,7 +2800,7 @@
     // --- MAIN BLASTING LOG TEXT VIEWPORT (CASCADE | DUAL | DRUM | FLAT) ---
     state.headerSplitUv = 1.0 - Math.min(0.32, Math.max(0.08, (headerH + 4) / Math.max(200, vh)));
     const logTop = headerH + 8;
-    const logBottom = getLogBottom(vh, logTop);
+    const logBottom = getLogBottom(vh, logTop, vw);
     const availH = Math.max(0, logBottom - logTop);
     const fs = state.fontSize;
     const monoFamily = "'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace";
@@ -2801,7 +2819,7 @@
     if (state.viewMode === "CASCADE" || state.viewMode === "DRUM") {
       // Giant Foreground Live Stream -> Progressively Shrinking Perspective Trail
       const isDrum = state.viewMode === "DRUM";
-      const heroMaxFs = Math.max(24, Math.min(Math.round(vw * 0.036), Math.round(fs * 3.25)));
+      const heroMaxFs = heroMaxFontPx(vw);
       const minTrailFs = Math.max(8.5, Math.round(fs * 0.64 * 2) / 2);
       const maxIndent = isDrum ? vw * 0.125 : vw * 0.05;
 

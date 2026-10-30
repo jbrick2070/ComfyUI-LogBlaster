@@ -34,17 +34,24 @@ let autoOpenGraceTimer = null;
 
 /**
  * Comfy Desktop (Electron) lets a page open an in-app window only for its sign-in
- * and checkout pages. Every other window.open goes to the operating system and the
- * page gets nothing back (its setWindowOpenHandler calls shell.openExternal and
- * denies the window). An empty URL reaches the system as about:blank, which Windows
- * answers with "you'll need a new app to open this about link": the Pop Out that
- * opened nothing (2026-10-30, on the 5080). There the HUD docks inside the app, and
- * Pop Out hands the HUD's real address to the default browser.
+ * and checkout pages. Anything else is denied: a download is saved, and every other
+ * address goes to the operating system (setWindowOpenHandler -> shell.openExternal)
+ * while the page gets nothing back. An empty URL reaches the system as about:blank,
+ * which Windows answers with "you'll need a new app to open this about link": the Pop
+ * Out that opened nothing (2026-10-30, on the 5080). There the HUD docks inside the
+ * app, and Pop Out hands the HUD's real address to the default browser.
+ *
+ * Told by the bridge Desktop's ComfyUI preload installs (window.__comfyDesktop2), the
+ * older Desktop's window.electronAPI, or an Electron user agent. A bridge must be an
+ * object, so a stray null or a primitive does not move a browser onto this path
+ * (Codex QA of 8778e8f); a browser on this path would still work, docking the HUD and
+ * popping it out to a new tab.
  */
 function inComfyDesktop() {
   try {
-    return typeof window.__comfyDesktop2 !== "undefined"
-      || typeof window.electronAPI !== "undefined"
+    const bridge = (value) => value !== null && typeof value === "object";
+    return bridge(window.__comfyDesktop2)
+      || bridge(window.electronAPI)
       || /\bElectron\//.test(String(window.navigator?.userAgent || ""));
   } catch (_) {
     return false;
@@ -120,10 +127,6 @@ function closeEmbeddedDock() {
     }
     dockEl.remove();
     dockEl = null;
-    // The docked HUD answered the last ping, and it is gone now. Its answer must
-    // not read as a live window: Pop Out closed the dock, found that answer, took
-    // it for an open HUD, and opened nothing.
-    lastPongMs = 0;
   }
 }
 
@@ -392,10 +395,14 @@ app.registerExtension({
       bus = new BroadcastChannel(`comfy-logblaster-bus:${SERVER_BASE}`);
       bus.addEventListener("message", (ev) => {
         const msgType = ev.data?.type;
+        // Only a HUD in a window of its own counts as one: a HUD in a frame (this
+        // page's dock, known from dockEl) says so. Taking the dock's answer for a
+        // window made Pop Out close the dock and open nothing (2026-10-30).
+        const separateWindow = ev.data?.embedded !== true;
         if (msgType === "pong") {
-          lastPongMs = Date.now();
+          if (separateWindow) lastPongMs = Date.now();
         } else if (msgType === "hello") {
-          lastPongMs = Date.now();
+          if (separateWindow) lastPongMs = Date.now();
           try {
             for (const [promptId, nodes] of promptNodeMaps) publishPromptNodeTitles(promptId, nodes);
           } catch (_) {}
