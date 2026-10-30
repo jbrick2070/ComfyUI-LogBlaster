@@ -10,7 +10,9 @@ Arcade Neon) while offloading shader work to the low-power integrated GPU.
 from __future__ import annotations
 
 import asyncio
+import html
 import os
+import re
 import sys
 import types
 from typing import Any, Dict
@@ -42,6 +44,8 @@ NODE_DISPLAY_NAME_MAPPINGS: Dict[str, str] = (
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 _HTML_PATH = os.path.join(_PKG_DIR, "web_app", "index.html")
+#: Where web_app/index.html shows the version (its title and the control dock).
+_VERSION_TOKEN = "__LOGBLASTER_VERSION__"
 
 _SAFE_HEADERS = {
     "Cache-Control": "no-store",
@@ -60,9 +64,74 @@ _OBSERVED_EXECUTION_EVENTS = frozenset(
 )
 
 
+def _git_commit(pkg_dir: str) -> str:
+    """The short commit this copy is checked out at, or "" (a registry install
+    has no .git). Read from the files, so serving a page never runs git."""
+    try:
+        git_dir = os.path.join(pkg_dir, ".git")
+        if os.path.isfile(git_dir):  # a worktree: ".git" names the real git dir
+            with open(git_dir, "r", encoding="utf-8") as fh:
+                pointer = fh.read().strip()
+            if not pointer.startswith("gitdir:"):
+                return ""
+            git_dir = os.path.normpath(os.path.join(pkg_dir, pointer[len("gitdir:"):].strip()))
+        with open(os.path.join(git_dir, "HEAD"), "r", encoding="utf-8") as fh:
+            head = fh.read().strip()
+        sha = head
+        if head.startswith("ref:"):
+            ref = head[len("ref:"):].strip()
+            sha = ""
+            for base in (git_dir, _common_git_dir(git_dir)):
+                loose = os.path.join(base, *ref.split("/"))
+                if os.path.isfile(loose):
+                    with open(loose, "r", encoding="utf-8") as fh:
+                        sha = fh.read().strip()
+                    break
+                packed = os.path.join(base, "packed-refs")
+                if os.path.isfile(packed):
+                    with open(packed, "r", encoding="utf-8") as fh:
+                        for line in fh:
+                            parts = line.split()
+                            if len(parts) == 2 and parts[1] == ref:
+                                sha = parts[0]
+                                break
+                if sha:
+                    break
+        return sha[:7] if re.fullmatch(r"[0-9a-f]{40,64}", sha) else ""
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _common_git_dir(git_dir: str) -> str:
+    """A worktree's shared git dir (its `commondir` file), else the dir itself."""
+    try:
+        with open(os.path.join(git_dir, "commondir"), "r", encoding="utf-8") as fh:
+            return os.path.normpath(os.path.join(git_dir, fh.read().strip()))
+    except OSError:
+        return git_dir
+
+
+def _pack_version(pkg_dir: str = _PKG_DIR) -> str:
+    """What the HUD shows as its version: pyproject's, with the git commit when
+    this copy is a checkout ("1.1.0 · c417464"), so an old copy is told from a
+    new one at a glance (operator, 2026-10-30, after an update left the 5080 on
+    the old page with nothing on screen to say so)."""
+    version = "?"
+    try:
+        with open(os.path.join(pkg_dir, "pyproject.toml"), "r", encoding="utf-8") as fh:
+            found = re.search(r'(?m)^version\s*=\s*"([^"]+)"', fh.read())
+        if found:
+            version = found.group(1)
+    except (OSError, UnicodeDecodeError):
+        pass
+    commit = _git_commit(pkg_dir)
+    return f"{version} · {commit}" if commit else version
+
+
 def _read_html_file() -> str:
     with open(_HTML_PATH, "r", encoding="utf-8") as fh:
-        return fh.read()
+        text = fh.read()
+    return text.replace(_VERSION_TOKEN, html.escape(_pack_version()))
 
 
 def _count_logblaster_observers(prompt_server: Any) -> int:
@@ -144,6 +213,7 @@ def register_routes(prompt_server: Any) -> bool:
     async def _serve_logblaster_telemetry(request: Any) -> Any:
         payload = await asyncio.to_thread(get_gpu_telemetry)
         payload["observers"] = _count_logblaster_observers(prompt_server)
+        payload["version"] = await asyncio.to_thread(_pack_version)
         return web.json_response(payload, headers=_SAFE_HEADERS)
 
     _install_observer_tap(prompt_server)

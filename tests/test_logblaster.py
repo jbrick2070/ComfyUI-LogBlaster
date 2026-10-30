@@ -217,6 +217,11 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     assert html_resp.headers.get("Cache-Control") == "no-store"
     html_body = html_resp.text
     assert html_body is not None
+    # The served page names its version where the HUD shows it; the token never leaks.
+    served_version = init_mod._pack_version()
+    assert "__LOGBLASTER_VERSION__" not in html_body
+    assert f'id="lbVersion" title="LogBlaster version">LOGBLASTER v{served_version}<' in html_body
+    assert f"<title>ComfyUI // LOG BLASTER v{served_version} " in html_body
 
     assert "#version 300 es" in html_body
     assert "/internal/logs/subscribe" in html_body
@@ -262,6 +267,55 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
     assert "metrics_mode" in telem_data
     assert "device_index" in telem_data
     assert telem_data["observers"] == 1
+    assert telem_data["version"] == served_version
+
+
+def test_the_version_names_the_pyproject_release_and_the_checkout_commit(tmp_path: Path) -> None:
+    """The HUD's version label (operator, 2026-10-30: an update left the 5080 on the
+    old page with nothing on screen to say so): pyproject's version, and the short
+    commit when the copy is a git checkout -- loose ref, packed ref, detached HEAD,
+    or a worktree whose .git is a pointer file. A registry install has no .git."""
+    sys.modules.pop("_comfyui_logblaster_singleton", None)
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    init_mod = _load_pkg_module("lb_init_version_test", "__init__.py")
+    sha = "0123456789abcdef0123456789abcdef01234567"
+
+    pkg = tmp_path / "registry_install"
+    pkg.mkdir()
+    (pkg / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "9.8.7"\n', encoding="utf-8")
+    assert init_mod._pack_version(str(pkg)) == "9.8.7"
+
+    git = pkg / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+    assert init_mod._pack_version(str(pkg)) == "9.8.7 · 0123456"
+
+    (git / "refs" / "heads" / "main").unlink()
+    (git / "packed-refs").write_text(f"# pack-refs with: peeled\n{sha} refs/heads/main\n", encoding="utf-8")
+    assert init_mod._pack_version(str(pkg)) == "9.8.7 · 0123456"
+
+    (git / "HEAD").write_text("fedcba9876543210fedcba9876543210fedcba98\n", encoding="utf-8")
+    assert init_mod._pack_version(str(pkg)) == "9.8.7 · fedcba9"
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "pyproject.toml").write_text('version = "9.8.7"\n', encoding="utf-8")
+    wt_git = git / "worktrees" / "wt"
+    wt_git.mkdir(parents=True)
+    (wt_git / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+    (wt_git / "commondir").write_text("../..\n", encoding="utf-8")
+    (git / "refs" / "heads" / "feature").write_text(sha + "\n", encoding="utf-8")
+    (worktree / ".git").write_text(f"gitdir: {wt_git}\n", encoding="utf-8")
+    assert init_mod._pack_version(str(worktree)) == "9.8.7 · 0123456"
+
+    (git / "HEAD").write_text("ref: refs/heads/nowhere\n", encoding="utf-8")
+    assert init_mod._pack_version(str(pkg)) == "9.8.7", "an unresolved ref shows the version alone"
+    assert init_mod._pack_version(str(tmp_path / "missing")) == "?"
+
+    page = (REPO_ROOT / "web_app" / "index.html").read_text(encoding="utf-8")
+    assert page.count("__LOGBLASTER_VERSION__") == 2, "the title and the control dock"
 
 
 def _extract_js_function(source: str, signature_prefix: str) -> str:

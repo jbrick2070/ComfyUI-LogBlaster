@@ -77,7 +77,7 @@ async function makeHud(options = {}) {
     createElement: () => new ElementStub(),
     body: new ElementStub(), documentElement: new ElementStub(),
   });
-  const location = { search: "", pathname: "/comfy/logblaster", host: "example.test:8000",
+  const location = { search: options.search || "", pathname: "/comfy/logblaster", host: "example.test:8000",
     protocol: "http:", href: "http://example.test:8000/comfy/logblaster", reload() {} };
   const window = new EventStub();
   const audioNodes = [];
@@ -238,7 +238,9 @@ async function verifyDemoOwnership() {
 
 async function verifyProductImprovements() {
   const storage = new Map();
-  const hud = await makeHud({ storage });
+  // The dock-clearance checks below measure the foot of the log, so this HUD
+  // keeps the live line there; the default (mid-screen) is pinned after them.
+  const hud = await makeHud({ storage, search: "?anchor=bottom" });
   assert.equal(hud.element("helpDialog").open, true, "First opening should explain the controls");
   await hud.element("btnHelpClose").click();
   assert.equal(hud.element("helpDialog").open, false);
@@ -304,6 +306,20 @@ async function verifyProductImprovements() {
   more.open = false;
   hud.element("controlDock").rect = { top: 340, height: 146 };
   assert.ok(hud.getLogBottom(500, 90) <= 330, "Logs must clear a wrapped dock");
+
+  // Mid-screen is the default (operator, 2026-10-30: "always middle"); the old
+  // ?anchor=middle still means it, and only ?anchor=bottom puts the line at the foot.
+  for (const [search, expected] of [["", 481], ["?anchor=middle", 481], ["?anchor=bottom", 742],
+                                    ["?anchor=BOTTOM", 742]]) {
+    const placed = await makeHud({ search });
+    placed.element("controlDock").rect = { top: 752, height: 37 };
+    assert.equal(placed.getLogBottom(801, 90), expected, `live line for "${search}"`);
+  }
+  {
+    const tiny = await makeHud();
+    tiny.element("controlDock").rect = { top: 300, height: 37 };
+    assert.equal(tiny.getLogBottom(310, 90), 186, "mid-screen on a short window");
+  }
   hud.state.activeNodeTitle = "Long workflow title ".repeat(6);
   hud.state.filterQuery = "needle";
   hud.ingestLogChunk("needle visible log\n");

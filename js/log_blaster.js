@@ -19,6 +19,7 @@ function resolveHudUrl() {
   return `${String(api.api_base || "").replace(/\/$/, "")}/logblaster`;
 }
 const HUD_URL = resolveHudUrl();
+const TELEMETRY_URL = HUD_URL.replace(/\/?$/, "/telemetry");
 const SERVER_BASE = new URL(HUD_URL, window.location.href).pathname.replace(/\/logblaster\/?$/, "");
 const WINDOW_NAME = "ComfyUILogBlasterHUD" + (SERVER_BASE ? `:${SERVER_BASE}` : "");
 const promptNodeMaps = new Map();
@@ -30,6 +31,25 @@ let bus = null;
 let autoOpenFallback = true;
 let lastQueueRemaining = 0;
 let autoOpenGraceTimer = null;
+
+/**
+ * Comfy Desktop (Electron) lets a page open an in-app window only for its sign-in
+ * and checkout pages. Every other window.open goes to the operating system and the
+ * page gets nothing back (its setWindowOpenHandler calls shell.openExternal and
+ * denies the window). An empty URL reaches the system as about:blank, which Windows
+ * answers with "you'll need a new app to open this about link": the Pop Out that
+ * opened nothing (2026-10-30, on the 5080). There the HUD docks inside the app, and
+ * Pop Out hands the HUD's real address to the default browser.
+ */
+function inComfyDesktop() {
+  try {
+    return typeof window.__comfyDesktop2 !== "undefined"
+      || typeof window.electronAPI !== "undefined"
+      || /\bElectron\//.test(String(window.navigator?.userAgent || ""));
+  } catch (_) {
+    return false;
+  }
+}
 
 function isAutoOpenEnabled() {
   try {
@@ -100,6 +120,10 @@ function closeEmbeddedDock() {
     }
     dockEl.remove();
     dockEl = null;
+    // The docked HUD answered the last ping, and it is gone now. Its answer must
+    // not read as a live window: Pop Out closed the dock, found that answer, took
+    // it for an open HUD, and opened nothing.
+    lastPongMs = 0;
   }
 }
 
@@ -154,12 +178,12 @@ function openEmbeddedDock() {
 
   const popBtn = document.createElement("button");
   popBtn.type = "button";
-  popBtn.textContent = "Pop Out Window";
+  popBtn.textContent = inComfyDesktop() ? "Open in Browser" : "Pop Out Window";
+  popBtn.title = inComfyDesktop()
+    ? "Comfy Desktop opens LogBlaster in your default browser"
+    : "Open LogBlaster in a window of its own";
   popBtn.style.cssText = btnStyle;
-  popBtn.addEventListener("click", () => {
-    closeEmbeddedDock();
-    openLogBlasterWindow(true);
-  });
+  popBtn.addEventListener("click", popOutHud);
 
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
@@ -180,7 +204,38 @@ function openEmbeddedDock() {
   document.body.appendChild(dockEl);
 }
 
+/** Pop Out: the HUD in a window of its own. In Comfy Desktop that is the default
+ *  browser, reached by the HUD's real address; window.open answers null there
+ *  whether or not the browser opened, so null is not a block to fall back from. */
+function popOutHud() {
+  closeEmbeddedDock();
+  if (inComfyDesktop()) {
+    try { window.open(new URL(HUD_URL, window.location.href).href, "_blank"); } catch (_) {}
+    return;
+  }
+  openLogBlasterWindow(true);
+}
+
+/** Dock the HUD for a run unless one is already watching. The server counts every
+ *  HUD connected to it (the logblaster-* sockets), so a HUD popped out to the
+ *  browser counts too, which BroadcastChannel cannot see from inside the app. */
+async function dockUnlessWatched() {
+  if (dockEl && document.body.contains(dockEl)) return;
+  try {
+    const res = await fetch(TELEMETRY_URL, { cache: "no-store" });
+    if (res.ok && Number((await res.json())?.observers) > 0) return;
+  } catch (_) {}
+  openEmbeddedDock();
+}
+
 function openLogBlasterWindow(focusIfOpen = false) {
+  if (inComfyDesktop()) {
+    // No in-app window can exist there: the button docks the HUD inside the app,
+    // and a run docks it when nothing is watching. Pop Out takes it to the browser.
+    if (focusIfOpen) openEmbeddedDock();
+    else void dockUnlessWatched();
+    return;
+  }
   if (isHudWindowAlive()) {
     try { bus?.postMessage({ type: "wake", ts: Date.now() }); } catch (_) {}
     if (focusIfOpen && popupRef && !popupRef.closed) {
@@ -239,6 +294,19 @@ function requestExternalRunAutoOpen() {
   }, 180);
 }
 
+/** The version the server reports, on the top-bar button's tooltip: the same
+ *  label the HUD shows in its dock, so the running copy is named in both places. */
+async function showVersionOnLauncher() {
+  try {
+    const res = await fetch(TELEMETRY_URL, { cache: "no-store" });
+    const version = res.ok ? (await res.json())?.version : "";
+    const btn = document.getElementById("comfy-logblaster-launch");
+    if (btn && typeof version === "string" && version && !btn.title.includes(version)) {
+      btn.title = `${btn.title} -- LogBlaster v${version}`;
+    }
+  } catch (_) {}
+}
+
 function mountToolbarControls() {
   if (document.getElementById("comfy-logblaster-pill")) return;
 
@@ -259,6 +327,7 @@ function mountToolbarControls() {
 
   const launchBtn = document.createElement("button");
   launchBtn.type = "button";
+  launchBtn.id = "comfy-logblaster-launch";
   launchBtn.textContent = "LOG BLASTER";
   launchBtn.title = "Open WebGL2 GPU Shader Log Visualizer (/logblaster)";
   launchBtn.style.cssText = [
@@ -339,7 +408,10 @@ app.registerExtension({
 
     mountToolbarControls();
     // Re-check toolbar mount after Vue topbar finishes async hydration
-    setTimeout(mountToolbarControls, 1200);
+    setTimeout(() => {
+      mountToolbarControls();
+      void showVersionOnLauncher();
+    }, 1200);
 
     // Hook synchronous queuePrompt so clicking Run opens the window inside the user gesture,
     // without stealing focus if already open and never blocking prompt queueing on any UI error.

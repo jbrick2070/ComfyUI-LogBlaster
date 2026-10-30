@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ComfyUI // LOG BLASTER — Audio-Reactive GPU Shader Terminal</title>
+<title>ComfyUI // LOG BLASTER v__LOGBLASTER_VERSION__ — Audio-Reactive GPU Shader Terminal</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2306101a'/%3E%3Cpath d='M6 18h5l3-9 4 14 3-7h5' stroke='%234df3ff' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
 <style>
   :root {
@@ -138,6 +138,12 @@
     letter-spacing: 0.5px;
     margin-right: 2px;
   }
+  .dock-version {
+    color: #9dc6d8;
+    font-size: 10px;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+  }
   input[type="range"].fx-slider {
     width: 62px;
     accent-color: var(--hud-accent);
@@ -215,6 +221,11 @@
 <div id="toastMsg"></div>
 
 <div id="controlDock" aria-label="LogBlaster Shader and Audio Controls">
+  <div class="dock-group">
+    <!-- The server fills the version in (__init__.py, _read_html_file), with the git
+         commit when this copy is a checkout, so an old copy is told from a new one. -->
+    <span class="dock-version" id="lbVersion" title="LogBlaster version">LOGBLASTER v__LOGBLASTER_VERSION__</span>
+  </div>
   <div class="dock-group">
     <button class="hud-btn is-active" data-preset="0" title="Hotkey: 1">1 CRT</button>
     <button class="hud-btn" data-preset="1" title="Hotkey: 2">2 CYBER</button>
@@ -314,7 +325,10 @@
   }
 
   const params = new URLSearchParams(location.search);
-  const ANCHOR_MIDDLE = (params.get("anchor") || "").toLowerCase() === "middle";
+  // The live line sits just below mid-screen unless ?anchor=bottom (operator,
+  // 2026-10-30: "the default view ... should be middle, always middle"). It was
+  // opt-in as ?anchor=middle, so every HUD opened from ComfyUI sat at the foot.
+  const ANCHOR_MIDDLE = (params.get("anchor") || "").toLowerCase() !== "bottom";
   const serverBase = location.pathname.replace(/\/logblaster\/?$/, "");
   function serverUrl(path) { return serverBase + path; }
   const preferHighGpu = params.get("gpu") === "high";
@@ -2565,9 +2579,10 @@
       controlsTop = Math.min(controlsTop, moreRect.top);
     }
     const bottom = Math.min(vh - 16, controlsTop - 10);
-    // ?anchor=middle: the live line sits just below mid-screen, for a projector or a
-    // shared screen whose lower edge the audience cannot see. DUAL keeps its background
-    // stream full height and centres its hero band instead (see the DUAL layer).
+    // The live line sits just below mid-screen (?anchor=bottom puts it at the foot), so
+    // a projector or a shared screen whose lower edge the audience cannot see still shows
+    // it. DUAL keeps its background stream full height and centres its hero band instead
+    // (see the DUAL layer).
     const midScreen = ANCHOR_MIDDLE && state.viewMode !== "DUAL";
     return Math.max(logTop, midScreen ? Math.min(bottom, Math.round(vh * 0.6)) : bottom);
   }
