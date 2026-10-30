@@ -314,6 +314,7 @@
   }
 
   const params = new URLSearchParams(location.search);
+  const ANCHOR_MIDDLE = (params.get("anchor") || "").toLowerCase() === "middle";
   const serverBase = location.pathname.replace(/\/logblaster\/?$/, "");
   function serverUrl(path) { return serverBase + path; }
   const preferHighGpu = params.get("gpu") === "high";
@@ -2563,7 +2564,12 @@
     if (Number.isFinite(moreRect?.top) && moreRect.height > 0 && moreRect.width > 0) {
       controlsTop = Math.min(controlsTop, moreRect.top);
     }
-    return Math.max(logTop, Math.min(vh - 16, controlsTop - 10));
+    const bottom = Math.min(vh - 16, controlsTop - 10);
+    // ?anchor=middle: the live line sits just below mid-screen, for a projector or a
+    // shared screen whose lower edge the audience cannot see. DUAL keeps its background
+    // stream full height and centres its hero band instead (see the DUAL layer).
+    const midScreen = ANCHOR_MIDDLE && state.viewMode !== "DUAL";
+    return Math.max(logTop, midScreen ? Math.min(bottom, Math.round(vh * 0.6)) : bottom);
   }
 
   function renderTextTexture(nowMs, dtSec) {
@@ -2977,18 +2983,21 @@
         const heroRows = wrapSpansMonospace(heroLine.spans, heroCols, 2);
         const heroSubH = Math.round(colossalFs * 1.18);
         const bandHeight = heroRows.length * heroSubH + subHeroFs + 48;
-        const bandTop = Math.max(logTop + 18, logBottom - bandHeight);
+        const heroBottom = ANCHOR_MIDDLE
+          ? Math.max(logTop + 18 + bandHeight, Math.min(logBottom, Math.round((vh + bandHeight) / 2)))
+          : logBottom;
+        const bandTop = Math.max(logTop + 18, heroBottom - bandHeight);
 
         // Soft alpha fade of Layer-1 glyphs behind the foreground Hero Stage (preserves WebGL2 bg!)
         ctx.save();
         ctx.globalCompositeOperation = "destination-out";
-        const maskGrad = ctx.createLinearGradient(0, bandTop - 26, 0, logBottom + 8);
+        const maskGrad = ctx.createLinearGradient(0, bandTop - 26, 0, heroBottom + 8);
         maskGrad.addColorStop(0.0, "rgba(0, 0, 0, 0.0)");
         maskGrad.addColorStop(0.18, "rgba(0, 0, 0, 0.80)");
         maskGrad.addColorStop(0.92, "rgba(0, 0, 0, 0.86)");
         maskGrad.addColorStop(1.0, "rgba(0, 0, 0, 0.35)");
         ctx.fillStyle = maskGrad;
-        ctx.fillRect(0, bandTop - 26, vw, (logBottom + 8) - (bandTop - 26));
+        ctx.fillRect(0, bandTop - 26, vw, (heroBottom + 8) - (bandTop - 26));
         ctx.restore();
 
         // Glowing HUD corner brackets framing the Dual-Layer Hero Stage
@@ -2999,8 +3008,8 @@
         ctx.beginPath();
         ctx.moveTo(padX, bandTop + cLen); ctx.lineTo(padX, bandTop); ctx.lineTo(padX + cLen, bandTop);
         ctx.moveTo(vw - padX - cLen, bandTop); ctx.lineTo(vw - padX, bandTop); ctx.lineTo(vw - padX, bandTop + cLen);
-        ctx.moveTo(padX, logBottom - cLen); ctx.lineTo(padX, logBottom); ctx.lineTo(padX + cLen, logBottom);
-        ctx.moveTo(vw - padX - cLen, logBottom); ctx.lineTo(vw - padX, logBottom); ctx.lineTo(vw - padX, logBottom - cLen);
+        ctx.moveTo(padX, heroBottom - cLen); ctx.lineTo(padX, heroBottom); ctx.lineTo(padX + cLen, heroBottom);
+        ctx.moveTo(vw - padX - cLen, heroBottom); ctx.lineTo(vw - padX, heroBottom); ctx.lineTo(vw - padX, heroBottom - cLen);
         ctx.stroke();
 
         ctx.font = `bold 12px ${monoFamily}`;

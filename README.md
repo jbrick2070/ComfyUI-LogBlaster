@@ -78,7 +78,7 @@ Restart ComfyUI — no Python packages to install and **0 MB extra PyTorch VRAM*
 1. **Inside ComfyUI UI**: Click **`LOG BLASTER`** in the top bar, or leave **`AUTO:ON`** enabled:
    - *UI Click/Shortcut Queue*: pops open the standalone HUD window synchronously.
    - *External API Queue while ComfyUI tab is open*: wakes an existing HUD via `BroadcastChannel` or opens an embedded dock drawer if the browser blocks background popups.
-2. **Direct URL**: Open `http://127.0.0.1:8000/logblaster` (supports `?preset=1..4&view=cascade|dual|drum|flat&tint=auto|comfy|amber|green|cyan&fx=0..160&fps=eco|60|max&redact=0|1`).
+2. **Direct URL**: Open `http://127.0.0.1:8000/logblaster` (supports `?preset=1..4&view=cascade|dual|drum|flat&tint=auto|comfy|amber|green|cyan&fx=0..160&fps=eco|60|max&redact=0|1&anchor=middle`; `anchor=middle` puts the live line just below mid-screen instead of at the bottom, for a projector or shared screen whose lower edge the audience cannot see; in `view=dual` the background stream still fills the whole screen and the hero band is centred).
 3. **Chromeless Native App Window**: Run `launch_log_blaster.bat [port] [host]`.
 4. **Opt-in Headless Watcher**: Run `powershell -ExecutionPolicy Bypass -File scripts\watch_and_pop.ps1 -HostName 127.0.0.1 -Port 8000` when driving headless API jobs with no ComfyUI browser tab open.
 5. **Optional Workflow Stage Marker (`LogBlaster_StageCue`)**: Drop `LogBlaster Stage Cue (FX Marker)` (`utils/LogBlaster`) inline on any wire (`passthrough`) or as a leaf cue (`always_fire = True`) to trigger `SHOCKWAVE`, `GLITCH_BURST`, `PHOSPHOR_FLASH`, or `BANNER_ONLY` pulses at key workflow milestones without invalidating downstream ComfyUI cache by default.
