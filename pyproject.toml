@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-logblaster"
-version = "1.1.0"
+version = "1.1.1"
 description = "Real-time Audio-Reactive WebGL2 GPU Shader Log-Text Visualizer & Auto-Popup HUD for ComfyUI — giant foreground streaming logs tapering into a 3D trail, 4 shaders, Comfy Black & Yellow palette, zero pip dependencies, and 0 MB extra PyTorch VRAM."
 readme = "README.md"
 license = {file = "LICENSE"}
