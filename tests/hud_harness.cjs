@@ -32,7 +32,7 @@ async function makeHud(options = {}) {
   const storage = options.storage || new Map();
   const motionQuery = new EventStub();
   motionQuery.matches = Boolean(options.reducedMotion);
-  const fetches = [], sockets = [], channels = [], draws = [], drawsAt = [];
+  const fetches = [], sockets = [], channels = [], draws = [], drawsAt = [], intervals = [];
   const timers = [];
   let nextTimerId = 0;
   const gradient = { addColorStop() {} };
@@ -136,7 +136,8 @@ async function makeHud(options = {}) {
       const timer = timers.find(item => item.id === id);
       if (timer) timer.canceled = true;
     },
-    setInterval: () => 1, clearInterval() {},
+    // Kept, never run on their own: a test fires one when it means to (the heartbeat).
+    setInterval(fn, delay) { intervals.push({ fn, delay }); return intervals.length; }, clearInterval() {},
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
     WebSocket: class extends EventStub {
       constructor(url) { super(); this.url = url; sockets.push(this); }
@@ -162,7 +163,7 @@ async function makeHud(options = {}) {
   });
   vm.runInContext(source, context, { filename: "logblaster-inline.js" });
   await new Promise(resolve => setImmediate(resolve));
-  return { ...context.__hudTest, element, window, document, fetches, sockets, channels, draws, drawsAt, audioNodes, timers,
+  return { ...context.__hudTest, element, window, document, fetches, sockets, channels, draws, drawsAt, intervals, audioNodes, timers,
     setTime(value) { now = value; }, setNvmlAvailable(value) { nvmlAvailable = value; },
     setFetchFailure(value) { fetchFailure = value; },
     async setReducedMotion(value) { motionQuery.matches = value; await motionQuery.emit("change"); },
@@ -371,10 +372,34 @@ async function verifyProductImprovements() {
     const said = await makeHud({ framed });
     const hudBus = said.channels.find(c => String(c.name).startsWith("comfy-logblaster-bus:"));
     await hudBus.emit("message", { data: { type: "ping" } });
+    // And the 1.5 s heartbeat, the answer the page hears most (Codex QA of ed6e097).
+    const heartbeat = said.intervals.find(t => t.delay === 1500);
+    assert.ok(heartbeat, "the HUD sets a 1.5 s heartbeat");
+    const before = hudBus.posts.length;
+    heartbeat.fn();
+    assert.equal(hudBus.posts.length, before + 1, "the heartbeat answers");
     const answers = hudBus.posts.filter(m => m.type === "hello" || m.type === "pong");
-    assert.ok(answers.some(m => m.type === "hello") && answers.some(m => m.type === "pong"),
-      "a hello on load and a pong on a ping");
+    assert.ok(answers.some(m => m.type === "hello") && answers.filter(m => m.type === "pong").length >= 2,
+      "a hello on load, a pong on a ping, and the heartbeat's");
     assert.ok(answers.every(m => m.embedded === framed), `framed=${framed}: every answer says so`);
+  }
+
+  // Common windows keep the live line full size; only a short one shrinks it
+  // (Codex QA of ed6e097: a fit that always returned 1 still passed).
+  for (const [w, h, dockTop, expectedPx] of [[1920, 1080, 1030, 46], [1366, 768, 718, 46],
+                                             [820, 475, 360, 30], [1280, 310, 261, 36]]) {
+    const sized = await makeHud();
+    sized.textCanvas.width = w;
+    sized.textCanvas.height = h;
+    sized.element("controlDock").rect = { top: dockTop, height: 40 };
+    // Long enough that no width auto-fits it onto one row (that path shrinks on purpose).
+    sized.ingestLogChunk(`${"R".repeat(400)}\n`);
+    for (let frame = 0; frame < 4; frame++) sized.renderTextTexture(2000 + frame * 1000, 1.0);
+    sized.drawsAt.length = 0;
+    sized.renderTextTexture(7000, 1.0);
+    const live = sized.drawsAt.filter(d => /^R+$/.test(d.text) && d.text.length > 20);
+    const sizes = [...new Set(live.map(d => Number(/(\d+(?:\.\d+)?)px/.exec(d.font)?.[1])))];
+    assert.deepEqual(sizes, [expectedPx], `${w}x${h}: the live line at ${expectedPx}px`);
   }
   hud.state.activeNodeTitle = "Long workflow title ".repeat(6);
   hud.state.filterQuery = "needle";

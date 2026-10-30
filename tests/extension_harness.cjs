@@ -196,6 +196,20 @@ async function makeExtension(useFileUrl = true, { desktop = false, observers = 0
   await strayPopup.api.queuePrompt(0, {});
   assert.equal(strayPopup.openCount(), 0, "so a run opens no second HUD");
 
+  // But clicking LOG BLASTER asks for OUR HUD: the stray popup is reopened by name
+  // and sent back to the HUD even while a window answer is fresh -- another HUD's,
+  // or the popup's own from before it navigated; the page cannot tell them apart
+  // (Codex QA of ed6e097: the click focused the unrelated page, or did nothing).
+  const clicked = await makeExtension();
+  clicked.popup.location.href = "https://example.test/comfy/elsewhere";
+  clicked.harness.setPopup(clicked.popup);
+  clicked.channels[0].listener({ data: { type: "pong", embedded: false } });
+  assert.equal(clicked.harness.isHudWindowAlive(), true);
+  clicked.harness.openLogBlasterWindow(true);
+  assert.equal(clicked.openCount(), 1, "the click reopens the popup");
+  assert.equal(clicked.opens[0][1], clicked.harness.WINDOW_NAME);
+  assert.equal(clicked.popup.location.href, "/comfy/logblaster", "and sends it back to the HUD");
+
   // Comfy Desktop hands every window.open to the system: never an empty URL
   // (about:blank -> "you'll need a new app to open this about link").
   const desk = await makeExtension(true, { desktop: true });

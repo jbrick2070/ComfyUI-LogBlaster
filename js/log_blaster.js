@@ -241,9 +241,14 @@ function openLogBlasterWindow(focusIfOpen = false) {
     else void dockUnlessWatched();
     return;
   }
-  if (isHudWindowAlive()) {
+  // Asked for the HUD while our popup shows some other page: reopen it below, where
+  // window.open by name re-attaches it, sends it back to the HUD and raises it.
+  // Another HUD's answer, or the popup's own from before it navigated, must not
+  // leave the click focusing the wrong page or doing nothing (Codex QA of ed6e097).
+  const restorePopup = focusIfOpen && popupRef && !popupRef.closed && !isHudPopup(popupRef);
+  if (!restorePopup && isHudWindowAlive()) {
     try { bus?.postMessage({ type: "wake", ts: Date.now() }); } catch (_) {}
-    if (focusIfOpen && popupRef && !popupRef.closed) {
+    if (focusIfOpen && popupRef && !popupRef.closed && isHudPopup(popupRef)) {
       try { popupRef.focus(); } catch (_) {}
     }
     return;
