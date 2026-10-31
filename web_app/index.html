@@ -4201,6 +4201,9 @@ void main() {
       syncVrButton();
       showToast(`VR COULD NOT START (${err && err.message ? err.message : err})`);
       scheduleNextFrame();
+      // An answer that came while this entry was starting kept the button up;
+      // ask again now that nothing is starting (Sonnet QA of e1c2b63).
+      checkVrSupport();
       return;
     }
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }

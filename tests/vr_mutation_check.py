@@ -61,7 +61,11 @@ MUTATIONS = {
         "    void 0;"),
     "a session's button can be hidden": (
         "btnVR.hidden = !supported && !xr.session && !xr.entering;",
-        "btnVR.hidden = !supported;"),
+        "btnVR.hidden = !supported && !xr.entering;"),
+    "a failed entry does not ask again": (
+        "      scheduleNextFrame();\n      // An answer that came while this entry was starting kept the button up;\n"
+        "      // ask again now that nothing is starting (Sonnet QA of e1c2b63).\n      checkVrSupport();",
+        "      scheduleNextFrame();"),
     "an entry's button can be hidden": (
         "btnVR.hidden = !supported && !xr.session && !xr.entering;",
         "btnVR.hidden = !supported && !xr.session;"),

@@ -101,6 +101,7 @@ class Page:
                                       "--window-size=1920,1080", "--hide-scrollbars", "--use-angle=swiftshader",
                                       "--enable-unsafe-swiftshader", f"--user-data-dir={OUT / 'profile'}",
                                       "about:blank"])
+        tab = None
         for _ in range(100):
             try:
                 tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json"))
@@ -108,6 +109,9 @@ class Page:
                 break
             except Exception:
                 time.sleep(0.2)
+        if tab is None:
+            self.proc.terminate()
+            raise SystemExit(f"Chrome did not open its DevTools port {PORT}; is CHROME right ({CHROME})?")
         self.ws = websocket.create_connection(tab["webSocketDebuggerUrl"], timeout=120, suppress_origin=True)
         self.n = 0
         self.errors = []

@@ -622,6 +622,30 @@ async function verifyVrDeviceChange() {
   assert.equal(hud.element("btnVR").hidden, true, "the headset went away: hidden after the session");
 }
 
+// An entry that fails after the headset said no meanwhile asks again, so the
+// button does not stay up with no headset (Sonnet QA of e1c2b63).
+async function verifyVrFailedEntryRechecks() {
+  const fake = makeFakeXr();
+  let supported = true;
+  const changed = [];
+  fake.xr.isSessionSupported = async mode => supported && mode === "immersive-vr";
+  fake.xr.addEventListener = (type, fn) => { if (type === "devicechange") changed.push(fn); };
+  const hud = await makeHud({ webgl2: true, xr: fake.xr, xrLayer: true });
+  await settle();
+  let failEntry;
+  hud.gl2.target.makeXRCompatible = () => new Promise((resolve, reject) => { failEntry = reject; });
+  await hud.element("btnVR").click();
+  await settle();
+  supported = false;
+  for (const fn of changed) fn({});
+  await settle();
+  assert.equal(hud.element("btnVR").hidden, false, "kept while the entry is starting");
+  failEntry(new Error("headset unplugged"));
+  await settle();
+  assert.equal(hud.element("btnVR").textContent, "VR");
+  assert.equal(hud.element("btnVR").hidden, true, "the failed entry asks again: no headset, no button");
+}
+
 // Support answers can arrive out of order; only the latest ask counts.
 async function verifyVrSupportOrder() {
   const fake = makeFakeXr();
@@ -1180,6 +1204,7 @@ async function verifyTerminalTiming() {
   await verifyVrLossMidSession();
   await verifyVrWallFailure();
   await verifyVrDeviceChange();
+  await verifyVrFailedEntryRechecks();
   await verifyVrSupportOrder();
   console.log("HUD_INTEGRATION_OK");
 })().catch(error => { console.error(error); process.exitCode = 1; });
