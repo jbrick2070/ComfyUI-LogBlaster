@@ -4107,7 +4107,9 @@ void main() {
     const session = xr.session;
     if (!session) return;
     session.requestAnimationFrame(vrFrame);
-    if (!gl || state.contextLost) return;
+    // A context can be lost before its event arrives; asking the context itself
+    // keeps that from reading as a wall the GPU will not make (Sonnet QA of 4a853ec).
+    if (!gl || state.contextLost || gl.isContextLost()) return;
     vrInputs(session, nowMs);
     if (!ensureVrWall()) {
       // The GPU would not make the wall (a shader that will not link, or a texture
@@ -4231,12 +4233,15 @@ void main() {
   let vrSupportAsk = 0;
 
   /** Shows or hides the button from the headset's answer. Only the latest ask
-   *  counts, and a running session keeps its EXIT VR button. */
+   *  counts, and a session starting or running keeps its button (an entry in
+   *  flight included: Sonnet QA of 4a853ec). */
   function checkVrSupport() {
     if (!vrPossible) return;
     const ask = ++vrSupportAsk;
     navigator.xr.isSessionSupported("immersive-vr")
-      .then((supported) => { if (ask === vrSupportAsk) btnVR.hidden = !supported && !xr.session; })
+      .then((supported) => {
+        if (ask === vrSupportAsk) btnVR.hidden = !supported && !xr.session && !xr.entering;
+      })
       .catch(() => {});
   }
 

@@ -56,7 +56,7 @@ async function makeHud(options = {}) {
   // name, every call is recorded, framebuffers are complete and programs link.
   // A test may put its own method on gl2.target (makeXRCompatible, say).
   const gl2 = options.webgl2 ? (() => {
-    const target = {}, calls = [], enums = new Map();
+    const target = {}, calls = [], enums = new Map(), sources = [], created = [], deleted = [];
     const gl = new Proxy(target, {
       get(obj, key) {
         if (key in obj) return obj[key];
@@ -67,16 +67,22 @@ async function makeHud(options = {}) {
         }
         return (...args) => {
           calls.push(key);
+          if (key === "shaderSource") sources.push(String(args[1]));
           if (key === "checkFramebufferStatus") return gl.FRAMEBUFFER_COMPLETE;
           if (key === "getShaderParameter" || key === "getProgramParameter") return true;
           if (key === "getExtension") return null;
           if (key === "getParameter") return "";
-          if (key.startsWith("create") || key === "getUniformLocation") return { made: key };
+          if (key.startsWith("delete")) deleted.push(args[0]);
+          if (key.startsWith("create") || key === "getUniformLocation") {
+            const made = { made: key };
+            created.push(made);
+            return made;
+          }
           return undefined;
         };
       },
     });
-    return { gl, target, calls };
+    return { gl, target, calls, sources, created, deleted };
   })() : null;
   // Window frames are queued, never run on their own; runFrames() runs the queue
   // once, as the browser's next frame would.
@@ -348,7 +354,12 @@ async function verifyVrLifecycle() {
   assert.equal(windowLoopRuns(hud), false, "the window loop stays off in VR, through the context restore");
   const session = fake.current();
   assert.ok(session.hasFrame(), "the headset's own loop is running");
+  await hud.document.emit("visibilitychange");
+  assert.equal(windowLoopRuns(hud), false, "a visibility change in VR does not start the window loop");
+  const madeBefore = hud.gl2.created.length;
   assert.ok(session.step(2000, HEAD_AHEAD), "a headset frame asks for the next");
+  const wallTargets = hud.gl2.created.slice(madeBefore).filter(made => made.made === "createFramebuffer");
+  assert.equal(wallTargets.length, 1, "the first headset frame makes the wall's target");
   assert.ok(hud.gl2.calls.includes("drawArrays"));
 
   // Controllers: trigger, grip, and a held thumbstick that steps once per rest.
@@ -372,9 +383,10 @@ async function verifyVrLifecycle() {
   assert.equal(hud.state.lines.length, notes, "at the largest text a push says nothing");
   session.inputSources = [];
 
-  // Exit: the window loop comes back and the flat layout returns.
+  // Exit: the wall is freed, the window loop comes back and the flat layout returns.
   await session.end();
   await settle();
+  assert.ok(hud.gl2.deleted.includes(wallTargets[0]), "the wall's framebuffer is freed on exit");
   assert.equal(btn.textContent, "VR");
   assert.equal(hud.state.vrLayout, false);
   assert.deepEqual([hud.textCanvas.width, hud.textCanvas.height], [1280, 720], "the window's raster is back");
@@ -498,6 +510,10 @@ async function verifyVrLossMidSession() {
   await hud.element("btnVR").click();
   await settle();
   assert.equal(hud.element("btnVR").textContent, "EXIT VR");
+  const wallShaders = () => hud.gl2.sources.filter(source => source.includes("u_mvp")).length;
+  fake.current().step(1000, HEAD_AHEAD);
+  const builtOnce = wallShaders();
+  assert.ok(builtOnce > 0, "the first headset frame builds the wall");
   const canvas = hud.element("glCanvas");
   await canvas.emit("webglcontextlost", { preventDefault() {} });
   await settle();
@@ -507,6 +523,17 @@ async function verifyVrLossMidSession() {
   await canvas.emit("webglcontextrestored", {});
   await settle();
   assert.ok(windowLoopRuns(hud), "after the restore the flat loop runs again");
+
+  // Back in VR on the restored context, the wall is built anew, not reused.
+  await hud.element("btnVR").click();
+  await settle();
+  fake.current().step(2000, HEAD_AHEAD);
+  assert.ok(wallShaders() > builtOnce, "the wall is rebuilt on the restored context");
+
+  // Leaving the page ends the session.
+  await hud.window.emit("pagehide");
+  await settle();
+  assert.ok(fake.current().ended, "pagehide ends the running session");
 }
 
 // A wall the GPU will not make ends the session instead of a black headset.
@@ -520,8 +547,38 @@ async function verifyVrWallFailure() {
   assert.equal(hud.element("btnVR").textContent, "EXIT VR");
   fake.current().step(1000, HEAD_AHEAD);
   await settle();
-  assert.ok(fake.current().ended, "the session ends");
+  assert.ok(fake.current().ended, "a target the GPU rejects ends the session");
   assert.equal(hud.element("btnVR").textContent, "VR");
+  assert.match(hud.element("toastMsg").textContent, /VR WALL COULD NOT BE MADE/);
+
+  // A context lost before its event arrives is not a wall the GPU will not make:
+  // the frame waits for the loss event instead of ending the session on a link
+  // failure that the loss caused.
+  const pending = makeFakeXr();
+  const hud3 = await makeHud({ webgl2: true, xr: pending.xr, xrLayer: true });
+  await settle();
+  await hud3.element("btnVR").click();
+  await settle();
+  hud3.gl2.target.isContextLost = () => true;
+  hud3.gl2.target.getProgramParameter = () => false;
+  pending.current().step(1000, HEAD_AHEAD);
+  await settle();
+  assert.equal(pending.current().ended, false, "a lost context waits for its event");
+  assert.doesNotMatch(hud3.element("toastMsg").textContent, /VR WALL COULD NOT BE MADE/);
+
+  // The other branch: the wall's shader will not link.
+  const linking = makeFakeXr();
+  const hud2 = await makeHud({ webgl2: true, xr: linking.xr, xrLayer: true });
+  await settle();
+  await hud2.element("btnVR").click();
+  await settle();
+  hud2.gl2.target.getProgramParameter = () => false;
+  const quiet = console.error;
+  console.error = () => {};             // the page reports the link error; expected here
+  try { linking.current().step(1000, HEAD_AHEAD); } finally { console.error = quiet; }
+  await settle();
+  assert.ok(linking.current().ended, "a wall shader that will not link ends the session");
+  assert.match(hud2.element("toastMsg").textContent, /VR WALL COULD NOT BE MADE/);
 }
 
 // A headset connected after the page opened shows the button without a reload; a
@@ -540,16 +597,49 @@ async function verifyVrDeviceChange() {
   for (const fn of changed) fn({});
   await settle();
   assert.equal(hud.element("btnVR").hidden, false, "Link started: the button appears");
+
+  // An entry in flight keeps its button even if the headset says no meanwhile,
+  // and the session it starts has its EXIT VR button (Sonnet QA of 4a853ec).
+  let releaseEntry;
+  const entryHeld = new Promise(resolve => { releaseEntry = resolve; });
+  hud.gl2.target.makeXRCompatible = () => entryHeld;
   await hud.element("btnVR").click();
   await settle();
-  assert.equal(hud.element("btnVR").textContent, "EXIT VR");
+  assert.equal(hud.element("btnVR").textContent, "VR...");
   supported = false;
+  for (const fn of changed) fn({});
+  await settle();
+  assert.equal(hud.element("btnVR").hidden, false, "an entry in flight keeps its button");
+  releaseEntry();
+  await settle();
+  assert.equal(hud.element("btnVR").textContent, "EXIT VR");
+  assert.equal(hud.element("btnVR").hidden, false, "the session it starts has its button");
   for (const fn of changed) fn({});
   await settle();
   assert.equal(hud.element("btnVR").hidden, false, "a running session keeps its button");
   await fake.current().end();
   await settle();
   assert.equal(hud.element("btnVR").hidden, true, "the headset went away: hidden after the session");
+}
+
+// Support answers can arrive out of order; only the latest ask counts.
+async function verifyVrSupportOrder() {
+  const fake = makeFakeXr();
+  const answers = [];
+  const changed = [];
+  fake.xr.isSessionSupported = () => new Promise(resolve => answers.push(resolve));
+  fake.xr.addEventListener = (type, fn) => { if (type === "devicechange") changed.push(fn); };
+  const hud = await makeHud({ webgl2: true, xr: fake.xr, xrLayer: true });
+  await settle();
+  for (const fn of changed) fn({});
+  await settle();
+  assert.equal(answers.length, 2, "one ask at load, one after the device change");
+  answers[1](true);
+  await settle();
+  assert.equal(hud.element("btnVR").hidden, false, "the newer answer: a headset");
+  answers[0](false);
+  await settle();
+  assert.equal(hud.element("btnVR").hidden, false, "the older answer, arriving late, changes nothing");
 }
 
 async function verifyDemoOwnership() {
@@ -1090,5 +1180,6 @@ async function verifyTerminalTiming() {
   await verifyVrLossMidSession();
   await verifyVrWallFailure();
   await verifyVrDeviceChange();
+  await verifyVrSupportOrder();
   console.log("HUD_INTEGRATION_OK");
 })().catch(error => { console.error(error); process.exitCode = 1; });
