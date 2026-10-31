@@ -52,6 +52,36 @@ async function makeHud(options = {}) {
     },
     set(target, key, value) { target[key] = value; return true; },
   });
+  // options.webgl2: a stand-in WebGL2 context. GL enums are stable numbers by
+  // name, every call is recorded, framebuffers are complete and programs link.
+  // A test may put its own method on gl2.target (makeXRCompatible, say).
+  const gl2 = options.webgl2 ? (() => {
+    const target = {}, calls = [], enums = new Map();
+    const gl = new Proxy(target, {
+      get(obj, key) {
+        if (key in obj) return obj[key];
+        if (typeof key !== "string") return undefined;
+        if (/^[A-Z0-9_]+$/.test(key)) {
+          if (!enums.has(key)) enums.set(key, 0x9000 + enums.size);
+          return enums.get(key);
+        }
+        return (...args) => {
+          calls.push(key);
+          if (key === "checkFramebufferStatus") return gl.FRAMEBUFFER_COMPLETE;
+          if (key === "getShaderParameter" || key === "getProgramParameter") return true;
+          if (key === "getExtension") return null;
+          if (key === "getParameter") return "";
+          if (key.startsWith("create") || key === "getUniformLocation") return { made: key };
+          return undefined;
+        };
+      },
+    });
+    return { gl, target, calls };
+  })() : null;
+  // Window frames are queued, never run on their own; runFrames() runs the queue
+  // once, as the browser's next frame would.
+  let rafCount = 0;
+  const rafQueue = new Map();
   class ElementStub extends EventStub {
     constructor(id = "") {
       super(); this.id = id; this.value = ""; this.textContent = ""; this.dataset = {};
@@ -60,7 +90,10 @@ async function makeHud(options = {}) {
       this.style = { setProperty() {} };
       this.classList = { toggle() {}, add() {}, remove() {} };
     }
-    getContext(type) { return type === "2d" ? context2d : null; }
+    getContext(type) {
+      if (type === "2d") return context2d;
+      return type === "webgl2" && gl2 && this.id === "glCanvas" ? gl2.gl : null;
+    }
     appendChild() {}
     focus() { document.activeElement = this; }
     blur() {}
@@ -128,7 +161,10 @@ async function makeHud(options = {}) {
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     // options.xr stands in for navigator.xr; options.xrLayer adds an XRWebGLLayer.
     navigator: { clipboard: { async writeText(text) { copied = text; } }, ...(options.xr ? { xr: options.xr } : {}) },
-    ...(options.xrLayer ? { XRWebGLLayer: class {} } : {}),
+    ...(options.xrLayer ? { XRWebGLLayer: class {
+      constructor(session, gl) { this.session = session; this.gl = gl; this.framebuffer = null; }
+      getViewport() { return { x: 0, y: 0, width: 1600, height: 900 }; }
+    } } : {}),
     setTimeout(fn, delay) {
       const id = ++nextTimerId;
       timers.push({ id, fn, delay, canceled: false });
@@ -140,7 +176,8 @@ async function makeHud(options = {}) {
     },
     // Kept, never run on their own: a test fires one when it means to (the heartbeat).
     setInterval(fn, delay) { intervals.push({ fn, delay }); return intervals.length; }, clearInterval() {},
-    requestAnimationFrame: () => 1, cancelAnimationFrame() {},
+    requestAnimationFrame: cb => { rafCount++; rafQueue.set(rafCount, cb); return rafCount; },
+    cancelAnimationFrame(id) { rafQueue.delete(id); },
     WebSocket: class extends EventStub {
       constructor(url) { super(); this.url = url; sockets.push(this); }
       close() {}
@@ -166,6 +203,8 @@ async function makeHud(options = {}) {
   vm.runInContext(source, context, { filename: "logblaster-inline.js" });
   await new Promise(resolve => setImmediate(resolve));
   return { ...context.__hudTest, element, window, document, fetches, sockets, channels, draws, drawsAt, intervals, audioNodes, timers,
+    gl2, storage, rafCount: () => rafCount,
+    runFrames(t) { const due = [...rafQueue.values()]; rafQueue.clear(); for (const cb of due) cb(t); },
     setTime(value) { now = value; }, setNvmlAvailable(value) { nvmlAvailable = value; },
     setFetchFailure(value) { fetchFailure = value; },
     async setReducedMotion(value) { motionQuery.matches = value; await motionQuery.emit("change"); },
@@ -189,6 +228,204 @@ async function verifyVrButtonGate() {
   await headset.element("btnVR").click();
   assert.deepEqual(asked, [], "without WebGL2 the page never asks the headset for anything");
   assert.equal(headset.state.vrLayout, false);
+}
+
+const settle = async (rounds = 6) => {
+  for (let i = 0; i < rounds; i++) await new Promise(resolve => setImmediate(resolve));
+};
+
+// A simulated headset: each requestSession hands out a new session that records
+// what the page asks of it. hooks.compatible(n) runs inside makeXRCompatible for
+// the nth entry, and hooks.endDelay holds a session's end event for a tick.
+function makeFakeXr(hooks = {}) {
+  const log = [], sessions = [];
+  function makeSession() {
+    const listeners = {};
+    let pending = null;
+    const session = {
+      inputSources: [], renderState: {}, ended: false,
+      updateRenderState(update) { log.push("renderState"); Object.assign(this.renderState, update); },
+      async requestReferenceSpace(type) { log.push("ref:" + type); return { type }; },
+      requestAnimationFrame(cb) { pending = cb; return 1; },
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+      async end() {
+        if (session.ended) return;
+        session.ended = true;
+        log.push("end");
+        if (hooks.endDelay) await settle(1);
+        for (const fn of listeners.end || []) fn({});
+      },
+      fire(type) { for (const fn of listeners[type] || []) fn({}); },
+      step(t, frame) { const cb = pending; pending = null; if (cb) cb(t, frame); return Boolean(pending); },
+      hasFrame: () => Boolean(pending),
+    };
+    return session;
+  }
+  const xr = {
+    async isSessionSupported(mode) { return mode === "immersive-vr"; },
+    async requestSession(mode) {
+      log.push("session:" + mode);
+      const session = makeSession();
+      sessions.push(session);
+      return session;
+    },
+  };
+  return { xr, log, sessions, current: () => sessions.at(-1) };
+}
+
+/** True when the window loop keeps itself going: its queued frame runs and asks
+ *  for the next one. */
+function windowLoopRuns(hud, t = 50000) {
+  const before = hud.rafCount();
+  hud.runFrames(t);
+  return hud.rafCount() > before;
+}
+
+const IDENTITY = Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const HEAD_AHEAD = { getViewerPose: () => ({ views: [{ projectionMatrix: IDENTITY,
+  transform: { inverse: { matrix: IDENTITY } } }] }) };
+
+// Sonnet QA of b3f65a6: a 1440p or 4K window already rasters at the VR size,
+// 2149 x 1209, and the resize used to return before the layout scale changed,
+// so the wall kept the window's layout (text about 37% small) and the flat page
+// kept the wall's after exit.
+async function verifyVrRasterScale() {
+  const hud = await makeHud();
+  Object.assign(hud.window, { innerWidth: 2560, innerHeight: 1440, devicePixelRatio: 1 });
+  await hud.window.emit("resize");
+  assert.deepEqual([hud.textCanvas.width, hud.textCanvas.height], [2149, 1209]);
+  const flatScale = hud.textCanvas._dpr;
+  assert.ok(Math.abs(flatScale - 2149 / 2560) < 1e-9);
+  hud.state.vrLayout = true;
+  await hud.window.emit("resize");
+  assert.deepEqual([hud.textCanvas.width, hud.textCanvas.height], [2149, 1209]);
+  assert.ok(Math.abs(hud.textCanvas._dpr - 2149 / 1600) < 1e-9,
+    "the wall lays out at 1600 CSS pixels even when its raster matches the window's");
+  hud.state.vrLayout = false;
+  await hud.window.emit("resize");
+  assert.ok(Math.abs(hud.textCanvas._dpr - flatScale) < 1e-9, "leaving VR restores the window's layout");
+}
+
+// The headset never shows the dock, so the wall keeps no room for it.
+async function verifyVrLogBottom() {
+  const hud = await makeHud({ search: "?anchor=bottom" });
+  const flat = hud.getLogBottom(900, 100, 1600);
+  hud.state.vrLayout = true;
+  assert.equal(hud.getLogBottom(900, 100, 1600), 900 - 16);
+  assert.ok(flat < 900 - 16, "the flat page still keeps room for its dock");
+}
+
+async function verifyVrLifecycle() {
+  // Entry through the GPU switch: makeXRCompatible loses and restores the context.
+  const fake = makeFakeXr();
+  const hud = await makeHud({ webgl2: true, xr: fake.xr, xrLayer: true });
+  await settle();
+  const btn = hud.element("btnVR");
+  const canvas = hud.element("glCanvas");
+  assert.equal(btn.hidden, false, "WebGL2 and a reported headset show the VR button");
+  hud.gl2.target.makeXRCompatible = async () => {
+    fake.log.push("makeXRCompatible");
+    await canvas.emit("webglcontextlost", { preventDefault() {} });
+    await settle(1);
+    await canvas.emit("webglcontextrestored", {});
+  };
+  assert.ok(windowLoopRuns(hud), "the flat page's loop runs before VR");
+  await btn.click();
+  await settle();
+  assert.deepEqual(fake.log, ["session:immersive-vr", "makeXRCompatible", "renderState", "ref:local"]);
+  assert.equal(btn.textContent, "EXIT VR");
+  assert.equal(hud.state.vrLayout, true);
+  assert.equal(windowLoopRuns(hud), false, "the window loop stays off in VR, through the context restore");
+  const session = fake.current();
+  assert.ok(session.hasFrame(), "the headset's own loop is running");
+  assert.ok(session.step(2000, HEAD_AHEAD), "a headset frame asks for the next");
+  assert.ok(hud.gl2.calls.includes("drawArrays"));
+
+  // Controllers: trigger, grip, and a held thumbstick that steps once per rest.
+  const preset = hud.state.preset;
+  session.fire("selectstart");
+  assert.equal(hud.state.preset, (preset + 1) % 4);
+  const view = hud.state.viewMode;
+  session.fire("squeezestart");
+  assert.notEqual(hud.state.viewMode, view);
+  session.inputSources = [{ gamepad: { axes: [0, 0, 0.9, 0] } }];
+  session.step(3000, HEAD_AHEAD);
+  session.step(3100, HEAD_AHEAD);
+  assert.equal(hud.storage.get("logblaster.vrArcDeg"), "120", "one step inside the rest");
+  session.step(3400, HEAD_AHEAD);
+  assert.equal(hud.storage.get("logblaster.vrArcDeg"), "130", "held: the next step after the rest");
+  session.inputSources = [{ gamepad: { axes: [0, 0, 0, -0.9] } }];
+  hud.state.fontSize = 22;
+  const notes = hud.state.lines.length;
+  session.step(4000, HEAD_AHEAD);
+  session.step(4400, HEAD_AHEAD);
+  assert.equal(hud.state.lines.length, notes, "at the largest text a push says nothing");
+  session.inputSources = [];
+
+  // Exit: the window loop comes back and the flat layout returns.
+  await session.end();
+  await settle();
+  assert.equal(btn.textContent, "VR");
+  assert.equal(hud.state.vrLayout, false);
+  assert.ok(windowLoopRuns(hud), "the window loop resumes after VR");
+
+  // A session that ends while it is still starting leaves the page ready.
+  const quitting = makeFakeXr();
+  const hud2 = await makeHud({ webgl2: true, xr: quitting.xr, xrLayer: true });
+  await settle();
+  hud2.gl2.target.makeXRCompatible = async () => { await quitting.current().end(); };
+  await hud2.element("btnVR").click();
+  await settle();
+  assert.equal(hud2.element("btnVR").textContent, "VR", "the button is not left on VR...");
+  assert.equal(hud2.state.vrLayout, false);
+  assert.ok(windowLoopRuns(hud2), "the window loop resumes");
+
+  // A failed entry's late end event must not clear the next entry's guard.
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const stale = makeFakeXr({ endDelay: true });
+  const hud3 = await makeHud({ webgl2: true, xr: stale.xr, xrLayer: true });
+  await settle();
+  let attempt = 0;
+  hud3.gl2.target.makeXRCompatible = async () => {
+    attempt += 1;
+    if (attempt === 1) throw new Error("adapter gone");
+    await held;
+  };
+  const btn3 = hud3.element("btnVR");
+  await btn3.click();                   // fails; its session's end event comes a tick late
+  await settle(1);
+  await btn3.click();                   // while that session is still ending: refused
+  await settle();
+  assert.equal(stale.sessions.length, 1, "no second entry while the failed one is still ending");
+  assert.equal(btn3.textContent, "VR");
+  await btn3.click();                   // a new entry, held in makeXRCompatible
+  await settle();
+  await btn3.click();                   // refused while that entry is starting
+  await settle();
+  assert.equal(stale.sessions.length, 2, "one entry at a time");
+  release();
+  await settle();
+  assert.equal(btn3.textContent, "EXIT VR", "the held entry finishes");
+  await stale.current().end();
+  await settle();
+  assert.equal(btn3.textContent, "VR");
+}
+
+// A headset connected after the page opened shows the button without a reload.
+async function verifyVrDeviceChange() {
+  const fake = makeFakeXr();
+  let supported = false;
+  const changed = [];
+  fake.xr.isSessionSupported = async mode => supported && mode === "immersive-vr";
+  fake.xr.addEventListener = (type, fn) => { if (type === "devicechange") changed.push(fn); };
+  const hud = await makeHud({ webgl2: true, xr: fake.xr, xrLayer: true });
+  await settle();
+  assert.equal(hud.element("btnVR").hidden, true, "no headset yet");
+  supported = true;
+  for (const fn of changed) fn({});
+  await settle();
+  assert.equal(hud.element("btnVR").hidden, false, "Link started: the button appears");
 }
 
 async function verifyDemoOwnership() {
@@ -722,5 +959,9 @@ async function verifyTerminalTiming() {
   await verifyProductImprovements();
   await verifyDemoOwnership();
   await verifyVrButtonGate();
+  await verifyVrRasterScale();
+  await verifyVrLogBottom();
+  await verifyVrLifecycle();
+  await verifyVrDeviceChange();
   console.log("HUD_INTEGRATION_OK");
 })().catch(error => { console.error(error); process.exitCode = 1; });

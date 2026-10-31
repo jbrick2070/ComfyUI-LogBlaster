@@ -2598,9 +2598,10 @@
   }
 
   function getLogBottom(vh, logTop, vw = window.innerWidth) {
-    // The headset never shows the dock, so the VR wall keeps no room for it.
+    // The headset never shows the dock, so the VR wall keeps no room for it: its
+    // controls "top" is the wall's foot, not the flat page's 48px fallback.
     const dockTop = state.vrLayout ? NaN : controlDock.getBoundingClientRect?.().top;
-    let controlsTop = Number.isFinite(dockTop) && dockTop > 0 ? dockTop : vh - 48;
+    let controlsTop = state.vrLayout ? vh : (Number.isFinite(dockTop) && dockTop > 0 ? dockTop : vh - 48);
     const moreRect = !state.vrLayout && dockMore.open ? dockMoreTools.getBoundingClientRect?.() : null;
     if (Number.isFinite(moreRect?.top) && moreRect.height > 0 && moreRect.width > 0) {
       controlsTop = Math.min(controlsTop, moreRect.top);
@@ -3656,13 +3657,23 @@ void main() {
       h = Math.max(200, Math.floor(h * scale));
     }
 
-    if (!forceRebuild && glCanvas.width === w && glCanvas.height === h) return;
+    // The layout scale can change while the raster does not: a 1440p or 4K window
+    // already rasters at the VR size, so entering or leaving VR changes only the
+    // CSS size the text is laid out at (Sonnet QA of b3f65a6).
+    const layoutScale = w / cssW;
+    if (!forceRebuild && glCanvas.width === w && glCanvas.height === h) {
+      if (textCanvas._dpr !== layoutScale) {
+        textCanvas._dpr = layoutScale;
+        state.textDirty = true;
+      }
+      return;
+    }
 
     glCanvas.width = w;
     glCanvas.height = h;
     textCanvas.width = w;
     textCanvas.height = h;
-    textCanvas._dpr = w / cssW;
+    textCanvas._dpr = layoutScale;
     state.textDirty = true;
 
     if (!gl || state.contextLost) return;
@@ -3744,7 +3755,7 @@ void main() {
   // The headset session (section 11). While one is starting or running, the
   // headset's own frame loop draws the page and the window loop stays off.
   const xr = {
-    session: null, entering: false, refSpace: null,
+    session: null, entering: false, attempt: null, refSpace: null,
     prog: null, vao: null, buf: null, mvpLoc: null, wallLoc: null,
     wall: null, meshKey: "", wallDirty: true, stickAtMs: 0,
     arcDeg: Math.min(VR_ARC_MAX_DEG, Math.max(VR_ARC_MIN_DEG,
@@ -4065,7 +4076,8 @@ void main() {
   }
 
   function vrInputs(session, nowMs) {
-    // One step per push, with a rest, from whichever thumbstick moves.
+    // A push makes one step; held, it steps again after each 320 ms rest. The
+    // first thumbstick that moves wins.
     if (nowMs - xr.stickAtMs < 320) return;
     for (const source of session.inputSources || []) {
       const pad = source.gamepad;
@@ -4078,9 +4090,11 @@ void main() {
         return;
       }
       if (Math.abs(y) > 0.7) {
-        // Up is negative on WebXR thumbsticks: up makes the text bigger.
+        // Up is negative on WebXR thumbsticks: up makes the text bigger. At either
+        // end of the range a push changes nothing and says nothing, like the arc.
+        const before = state.fontSize;
         document.getElementById(y < 0 ? "btnFontUp" : "btnFontDown").click();
-        vrNote(`TEXT ${state.fontSize}px`);
+        if (state.fontSize !== before) vrNote(`TEXT ${state.fontSize}px`);
         xr.stickAtMs = nowMs;
         return;
       }
@@ -4123,12 +4137,12 @@ void main() {
     btnVR.classList.toggle("is-active", Boolean(xr.session));
   }
 
+  /** The running session ended: from the headset, the button, a lost context or
+   *  pagehide. Only the current session counts. One still starting is settled by
+   *  the enterVR call that asked for it, and a late end event from an earlier
+   *  session changes nothing (Sonnet QA of b3f65a6). */
   function onVrEnd(session) {
-    const wasRunning = xr.session === session;
-    if (!wasRunning && !xr.entering) return;
-    // A session that ends while still starting is settled by enterVR itself.
-    xr.entering = false;
-    if (!wasRunning) return;
+    if (xr.session !== session) return;
     xr.session = null;
     xr.refSpace = null;
     freeVrWall();
@@ -4143,10 +4157,16 @@ void main() {
 
   async function enterVR() {
     if (xr.session || xr.entering || !gl || !navigator.xr) return;
+    // The starting guard belongs to this entry: only it lowers the guard, and only
+    // once its session is either running or really gone, so a click meanwhile
+    // cannot start a second entry (Sonnet QA of b3f65a6).
+    const attempt = {};
+    xr.attempt = attempt;
     xr.entering = true;
     syncVrButton();
     let session = null;
     let ended = false;
+    let refSpace = null;
     try {
       // Asked for first, inside the click: the context switch below can take
       // long enough to spend the page's user activation (Codex r1).
@@ -4154,21 +4174,23 @@ void main() {
       session.addEventListener("end", () => { ended = true; onVrEnd(session); });
       if (gl.makeXRCompatible) await gl.makeXRCompatible();
       if (state.contextLost) throw new Error("the WebGL context was lost and not restored");
+      if (ended) throw new Error("the headset ended the session");
       session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
-      xr.refSpace = await session.requestReferenceSpace("local");
+      refSpace = await session.requestReferenceSpace("local");
+      if (ended) throw new Error("the headset ended the session");
     } catch (err) {
-      xr.entering = false;
-      xr.refSpace = null;
       if (session && !ended) { try { await session.end(); } catch (_) {} }
+      if (xr.attempt === attempt) { xr.attempt = null; xr.entering = false; }
       syncVrButton();
       showToast(`VR COULD NOT START (${err && err.message ? err.message : err})`);
       scheduleNextFrame();
       return;
     }
-    if (ended) return;
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-    xr.session = session;
+    xr.attempt = null;
     xr.entering = false;
+    xr.session = session;
+    xr.refSpace = refSpace;
     session.addEventListener("selectstart", () => {
       setPreset(state.preset + 1);
       vrNote(`SHADER ${state.preset + 1}: ${PRESET_NAMES[state.preset]}`);
@@ -4197,9 +4219,17 @@ void main() {
   });
   if (gl && typeof navigator !== "undefined" && navigator.xr &&
       typeof navigator.xr.isSessionSupported === "function" && typeof XRWebGLLayer !== "undefined") {
-    navigator.xr.isSessionSupported("immersive-vr")
-      .then((supported) => { btnVR.hidden = !supported; })
-      .catch(() => {});
+    const checkVrSupport = () => {
+      navigator.xr.isSessionSupported("immersive-vr")
+        .then((supported) => { btnVR.hidden = !supported && !xr.session; })
+        .catch(() => {});
+    };
+    checkVrSupport();
+    // Link or Air Link started after the page opened: the browser reports it here,
+    // so the button appears without a reload (Sonnet QA of b3f65a6).
+    if (typeof navigator.xr.addEventListener === "function") {
+      navigator.xr.addEventListener("devicechange", checkVrSupport);
+    }
   }
   window.addEventListener("pagehide", () => {
     if (xr.session) xr.session.end().catch(() => {});
