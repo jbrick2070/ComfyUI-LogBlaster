@@ -3723,6 +3723,8 @@ void main() {
       // The VR wall's GL objects die with the context. Entering VR can lose and
       // restore it on purpose (makeXRCompatible moving to the headset's GPU), so
       // only a session already running is ended here (Codex r1, 2026-10-31).
+      // enterVR counts the losses so one after its layer was made is caught.
+      xr.contextLosses += 1;
       forgetVrGl();
       if (xr.session && !xr.entering) xr.session.end().catch(() => {});
     });
@@ -3755,7 +3757,7 @@ void main() {
   // The headset session (section 11). While one is starting or running, the
   // headset's own frame loop draws the page and the window loop stays off.
   const xr = {
-    session: null, entering: false, attempt: null, refSpace: null,
+    session: null, entering: false, refSpace: null, contextLosses: 0,
     prog: null, vao: null, buf: null, mvpLoc: null, wallLoc: null,
     wall: null, meshKey: "", wallDirty: true, stickAtMs: 0,
     arcDeg: Math.min(VR_ARC_MAX_DEG, Math.max(VR_ARC_MIN_DEG,
@@ -4107,7 +4109,13 @@ void main() {
     session.requestAnimationFrame(vrFrame);
     if (!gl || state.contextLost) return;
     vrInputs(session, nowMs);
-    if (!ensureVrWall()) return;
+    if (!ensureVrWall()) {
+      // The GPU would not make the wall (a shader that will not link, or a texture
+      // target it rejects): end the session and say so, not a black headset.
+      showToast("VR WALL COULD NOT BE MADE ON THIS GPU");
+      session.end().catch(() => {});
+      return;
+    }
     if (xr.wallDirty || contentFrameDue(nowMs)) {
       drawContentFrame(nowMs, xr.wall.fbo);
       xr.wallDirty = false;
@@ -4153,15 +4161,16 @@ void main() {
     syncVrButton();
     vrNote("OFF");
     scheduleNextFrame();
+    // A headset that went away during the session hides the button again.
+    checkVrSupport();
   }
 
   async function enterVR() {
     if (xr.session || xr.entering || !gl || !navigator.xr) return;
-    // The starting guard belongs to this entry: only it lowers the guard, and only
-    // once its session is either running or really gone, so a click meanwhile
-    // cannot start a second entry (Sonnet QA of b3f65a6).
-    const attempt = {};
-    xr.attempt = attempt;
+    // Only this function raises or lowers the starting guard, and it lowers it
+    // only once its session is running or really gone: a click meanwhile starts
+    // nothing, and a late end event from an earlier session changes nothing
+    // (Sonnet QA of b3f65a6 and 6a6ed7e).
     xr.entering = true;
     syncVrButton();
     let session = null;
@@ -4175,19 +4184,24 @@ void main() {
       if (gl.makeXRCompatible) await gl.makeXRCompatible();
       if (state.contextLost) throw new Error("the WebGL context was lost and not restored");
       if (ended) throw new Error("the headset ended the session");
+      const lossesAtLayer = xr.contextLosses;
       session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
       refSpace = await session.requestReferenceSpace("local");
       if (ended) throw new Error("the headset ended the session");
+      // A loss after the layer was made, even one already restored, leaves the
+      // layer on a dead context: the headset would stay black (Sonnet QA of 6a6ed7e).
+      if (state.contextLost || xr.contextLosses !== lossesAtLayer) {
+        throw new Error("the WebGL context was lost while VR was starting");
+      }
     } catch (err) {
       if (session && !ended) { try { await session.end(); } catch (_) {} }
-      if (xr.attempt === attempt) { xr.attempt = null; xr.entering = false; }
+      xr.entering = false;
       syncVrButton();
       showToast(`VR COULD NOT START (${err && err.message ? err.message : err})`);
       scheduleNextFrame();
       return;
     }
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-    xr.attempt = null;
     xr.entering = false;
     xr.session = session;
     xr.refSpace = refSpace;
@@ -4212,24 +4226,30 @@ void main() {
 
   // The button appears only where a headset session can really start: a browser
   // with WebXR, a reported immersive-vr device, and this page's WebGL2 context.
+  const vrPossible = Boolean(gl && typeof navigator !== "undefined" && navigator.xr &&
+    typeof navigator.xr.isSessionSupported === "function" && typeof XRWebGLLayer !== "undefined");
+  let vrSupportAsk = 0;
+
+  /** Shows or hides the button from the headset's answer. Only the latest ask
+   *  counts, and a running session keeps its EXIT VR button. */
+  function checkVrSupport() {
+    if (!vrPossible) return;
+    const ask = ++vrSupportAsk;
+    navigator.xr.isSessionSupported("immersive-vr")
+      .then((supported) => { if (ask === vrSupportAsk) btnVR.hidden = !supported && !xr.session; })
+      .catch(() => {});
+  }
+
   btnVR.hidden = true;
   btnVR.addEventListener("click", () => {
     if (xr.session) xr.session.end().catch(() => {});
     else enterVR();
   });
-  if (gl && typeof navigator !== "undefined" && navigator.xr &&
-      typeof navigator.xr.isSessionSupported === "function" && typeof XRWebGLLayer !== "undefined") {
-    const checkVrSupport = () => {
-      navigator.xr.isSessionSupported("immersive-vr")
-        .then((supported) => { btnVR.hidden = !supported && !xr.session; })
-        .catch(() => {});
-    };
-    checkVrSupport();
-    // Link or Air Link started after the page opened: the browser reports it here,
-    // so the button appears without a reload (Sonnet QA of b3f65a6).
-    if (typeof navigator.xr.addEventListener === "function") {
-      navigator.xr.addEventListener("devicechange", checkVrSupport);
-    }
+  checkVrSupport();
+  // Link or Air Link started after the page opened: the browser reports it here,
+  // so the button appears without a reload (Sonnet QA of b3f65a6).
+  if (vrPossible && typeof navigator.xr.addEventListener === "function") {
+    navigator.xr.addEventListener("devicechange", checkVrSupport);
   }
   window.addEventListener("pagehide", () => {
     if (xr.session) xr.session.end().catch(() => {});

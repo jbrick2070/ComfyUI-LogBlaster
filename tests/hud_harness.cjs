@@ -235,25 +235,33 @@ const settle = async (rounds = 6) => {
 };
 
 // A simulated headset: each requestSession hands out a new session that records
-// what the page asks of it. hooks.compatible(n) runs inside makeXRCompatible for
-// the nth entry, and hooks.endDelay holds a session's end event for a tick.
+// what the page asks of it. Hooks: endDelay holds a session's end event for a
+// tick inside end(); lateEndEvent lets end() resolve first and fires the event on
+// a later macrotask, as a browser may; refSpace(session) runs inside
+// requestReferenceSpace, the last step of an entry.
 function makeFakeXr(hooks = {}) {
   const log = [], sessions = [];
   function makeSession() {
     const listeners = {};
     let pending = null;
+    const fireEnd = () => { for (const fn of listeners.end || []) fn({}); };
     const session = {
       inputSources: [], renderState: {}, ended: false,
       updateRenderState(update) { log.push("renderState"); Object.assign(this.renderState, update); },
-      async requestReferenceSpace(type) { log.push("ref:" + type); return { type }; },
+      async requestReferenceSpace(type) {
+        log.push("ref:" + type);
+        if (hooks.refSpace) await hooks.refSpace(session);
+        return { type };
+      },
       requestAnimationFrame(cb) { pending = cb; return 1; },
       addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
       async end() {
         if (session.ended) return;
         session.ended = true;
         log.push("end");
+        if (hooks.lateEndEvent) { setImmediate(fireEnd); return; }
         if (hooks.endDelay) await settle(1);
-        for (const fn of listeners.end || []) fn({});
+        fireEnd();
       },
       fire(type) { for (const fn of listeners[type] || []) fn({}); },
       step(t, frame) { const cb = pending; pending = null; if (cb) cb(t, frame); return Boolean(pending); },
@@ -297,10 +305,12 @@ async function verifyVrRasterScale() {
   const flatScale = hud.textCanvas._dpr;
   assert.ok(Math.abs(flatScale - 2149 / 2560) < 1e-9);
   hud.state.vrLayout = true;
+  hud.state.textDirty = false;
   await hud.window.emit("resize");
   assert.deepEqual([hud.textCanvas.width, hud.textCanvas.height], [2149, 1209]);
   assert.ok(Math.abs(hud.textCanvas._dpr - 2149 / 1600) < 1e-9,
     "the wall lays out at 1600 CSS pixels even when its raster matches the window's");
+  assert.equal(hud.state.textDirty, true, "the new layout is drawn, not just recorded");
   hud.state.vrLayout = false;
   await hud.window.emit("resize");
   assert.ok(Math.abs(hud.textCanvas._dpr - flatScale) < 1e-9, "leaving VR restores the window's layout");
@@ -367,20 +377,28 @@ async function verifyVrLifecycle() {
   await settle();
   assert.equal(btn.textContent, "VR");
   assert.equal(hud.state.vrLayout, false);
+  assert.deepEqual([hud.textCanvas.width, hud.textCanvas.height], [1280, 720], "the window's raster is back");
   assert.ok(windowLoopRuns(hud), "the window loop resumes after VR");
 
-  // A session that ends while it is still starting leaves the page ready.
+  // A session that ends while it is still starting leaves the page ready. A window
+  // frame runs during the entry, as a browser's would, and stops the flat loop, so
+  // only the failed entry's own restart can bring it back.
   const quitting = makeFakeXr();
   const hud2 = await makeHud({ webgl2: true, xr: quitting.xr, xrLayer: true });
   await settle();
-  hud2.gl2.target.makeXRCompatible = async () => { await quitting.current().end(); };
+  let loopStoppedDuringEntry = null;
+  hud2.gl2.target.makeXRCompatible = async () => {
+    loopStoppedDuringEntry = !windowLoopRuns(hud2);
+    await quitting.current().end();
+  };
   await hud2.element("btnVR").click();
   await settle();
+  assert.equal(loopStoppedDuringEntry, true, "the flat loop stops while an entry starts");
   assert.equal(hud2.element("btnVR").textContent, "VR", "the button is not left on VR...");
   assert.equal(hud2.state.vrLayout, false);
-  assert.ok(windowLoopRuns(hud2), "the window loop resumes");
+  assert.ok(windowLoopRuns(hud2), "the failed entry restarts the window loop");
 
-  // A failed entry's late end event must not clear the next entry's guard.
+  // A failed entry whose session is slow to end: a click meanwhile starts nothing.
   let release;
   const held = new Promise(resolve => { release = resolve; });
   const stale = makeFakeXr({ endDelay: true });
@@ -410,9 +428,105 @@ async function verifyVrLifecycle() {
   await stale.current().end();
   await settle();
   assert.equal(btn3.textContent, "VR");
+
+  // A failed entry's end event that arrives after end() has resolved, on a later
+  // macrotask as a browser's may, must not lower the next entry's guard.
+  let releaseLate;
+  const heldLate = new Promise(resolve => { releaseLate = resolve; });
+  const late = makeFakeXr({ lateEndEvent: true });
+  const hud4 = await makeHud({ webgl2: true, xr: late.xr, xrLayer: true });
+  await settle();
+  let lateAttempt = 0;
+  hud4.gl2.target.makeXRCompatible = async () => {
+    lateAttempt += 1;
+    if (lateAttempt === 1) throw new Error("adapter gone");
+    await heldLate;
+  };
+  const microtasks = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+  const btn4 = hud4.element("btnVR");
+  await btn4.click();                   // fails; end() resolves, its event is still queued
+  await microtasks();
+  assert.equal(btn4.textContent, "VR");
+  await btn4.click();                   // a second entry, held in makeXRCompatible
+  await microtasks();
+  assert.equal(late.sessions.length, 2);
+  await settle(2);                      // the first session's late end event arrives now
+  await btn4.click();                   // refused: the second entry is still starting
+  await settle();
+  assert.equal(late.sessions.length, 2, "a late end event cannot let a third entry start");
+  assert.equal(btn4.textContent, "VR...");
+  releaseLate();
+  await settle();
+  assert.equal(btn4.textContent, "EXIT VR", "the held entry finishes");
+  await late.current().end();
+  await settle();
+  assert.equal(btn4.textContent, "VR");
 }
 
-// A headset connected after the page opened shows the button without a reload.
+// The last step of an entry: the headset ending the session, or a context loss
+// there (even one already restored), leaves no session drawing into a dead layer.
+async function verifyVrLastStep() {
+  const quit = makeFakeXr({ refSpace: async session => { await session.end(); } });
+  const hud = await makeHud({ webgl2: true, xr: quit.xr, xrLayer: true });
+  await settle();
+  await hud.element("btnVR").click();
+  await settle();
+  assert.equal(hud.element("btnVR").textContent, "VR", "ended in the last step: no live session");
+  assert.equal(hud.state.vrLayout, false);
+
+  let lossHud = null;
+  const loss = makeFakeXr({ refSpace: async () => {
+    const canvas = lossHud.element("glCanvas");
+    await canvas.emit("webglcontextlost", { preventDefault() {} });
+    await canvas.emit("webglcontextrestored", {});
+  } });
+  lossHud = await makeHud({ webgl2: true, xr: loss.xr, xrLayer: true });
+  await settle();
+  await lossHud.element("btnVR").click();
+  await settle();
+  assert.equal(lossHud.element("btnVR").textContent, "VR", "a loss after the layer was made ends the entry");
+  assert.ok(loss.current().ended, "and its session, rather than leaving it on a dead layer");
+  assert.equal(lossHud.state.vrLayout, false);
+}
+
+// A context lost while a session runs ends the session; the restore brings the
+// flat page's loop back.
+async function verifyVrLossMidSession() {
+  const fake = makeFakeXr();
+  const hud = await makeHud({ webgl2: true, xr: fake.xr, xrLayer: true });
+  await settle();
+  await hud.element("btnVR").click();
+  await settle();
+  assert.equal(hud.element("btnVR").textContent, "EXIT VR");
+  const canvas = hud.element("glCanvas");
+  await canvas.emit("webglcontextlost", { preventDefault() {} });
+  await settle();
+  assert.ok(fake.current().ended, "a lost context ends the running session");
+  assert.equal(hud.element("btnVR").textContent, "VR");
+  assert.equal(hud.state.vrLayout, false);
+  await canvas.emit("webglcontextrestored", {});
+  await settle();
+  assert.ok(windowLoopRuns(hud), "after the restore the flat loop runs again");
+}
+
+// A wall the GPU will not make ends the session instead of a black headset.
+async function verifyVrWallFailure() {
+  const fake = makeFakeXr();
+  const hud = await makeHud({ webgl2: true, xr: fake.xr, xrLayer: true });
+  await settle();
+  hud.gl2.target.checkFramebufferStatus = () => 0;
+  await hud.element("btnVR").click();
+  await settle();
+  assert.equal(hud.element("btnVR").textContent, "EXIT VR");
+  fake.current().step(1000, HEAD_AHEAD);
+  await settle();
+  assert.ok(fake.current().ended, "the session ends");
+  assert.equal(hud.element("btnVR").textContent, "VR");
+}
+
+// A headset connected after the page opened shows the button without a reload; a
+// running session keeps its button whatever the headset reports, and after it
+// ends the recheck hides the button if the headset went away.
 async function verifyVrDeviceChange() {
   const fake = makeFakeXr();
   let supported = false;
@@ -426,6 +540,16 @@ async function verifyVrDeviceChange() {
   for (const fn of changed) fn({});
   await settle();
   assert.equal(hud.element("btnVR").hidden, false, "Link started: the button appears");
+  await hud.element("btnVR").click();
+  await settle();
+  assert.equal(hud.element("btnVR").textContent, "EXIT VR");
+  supported = false;
+  for (const fn of changed) fn({});
+  await settle();
+  assert.equal(hud.element("btnVR").hidden, false, "a running session keeps its button");
+  await fake.current().end();
+  await settle();
+  assert.equal(hud.element("btnVR").hidden, true, "the headset went away: hidden after the session");
 }
 
 async function verifyDemoOwnership() {
@@ -962,6 +1086,9 @@ async function verifyTerminalTiming() {
   await verifyVrRasterScale();
   await verifyVrLogBottom();
   await verifyVrLifecycle();
+  await verifyVrLastStep();
+  await verifyVrLossMidSession();
+  await verifyVrWallFailure();
   await verifyVrDeviceChange();
   console.log("HUD_INTEGRATION_OK");
 })().catch(error => { console.error(error); process.exitCode = 1; });
