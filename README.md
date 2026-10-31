@@ -73,6 +73,12 @@ Restart ComfyUI — no Python packages to install and **0 MB extra PyTorch VRAM*
 - **`/` Live Filter**: Filter the 3,500-line scrollback buffer in real time inside the GPU shader.
 - **`E` Error Jump (`ERR: N`)**: Instantly pause follow and spotlight any error line directly in the giant foreground Hero stage.
 
+## Watch It in VR (Tethered Headset)
+
+- **`VR`**: With a headset running as a PC headset (Quest Link or Air Link), open `/logblaster` in the PC's browser and press **VR**. The log wraps around you on a curved wall fixed in the room, with the same shaders, views and palettes as the flat page. The button appears only when the browser reports a headset and WebGL2 is available.
+- **Controllers:** trigger = next shader, grip = next view, thumbstick left/right = narrower or wider wall (80–160 degrees, remembered), up/down = text size. Each change is announced on the wall itself.
+- The headset needs `localhost` (or HTTPS): a standalone headset browsing to the PC over Wi-Fi is not a secure context, so WebXR stays off there.
+
 ## Launching
 
 1. **Inside ComfyUI UI**: Click **`LOG BLASTER`** in the top bar, or leave **`AUTO:ON`** enabled:

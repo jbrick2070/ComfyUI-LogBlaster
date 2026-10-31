@@ -259,6 +259,7 @@
         <button class="hud-btn" id="btnCopy" title="Copy logs to clipboard (respects REDACT toggle)">COPY</button>
       </div>
     </details>
+    <button class="hud-btn" id="btnVR" hidden title="Watch the log on a curved wall in a tethered headset (Quest Link or Air Link). Trigger: next shader. Grip: next view. Thumbstick: wall width and text size.">VR</button>
     <button class="hud-btn" id="btnFullscreen" title="Toggle Fullscreen (Hotkey: F)">FULL</button>
     <button class="hud-btn" id="btnHelp" aria-label="Open LogBlaster help" title="Help (Hotkey: ? or H)">?</button>
   </div>
@@ -277,6 +278,7 @@
     <dt>M / A</dt><dd>Toggle synth / capture system or tab audio</dd>
     <dt>Shift+A</dt><dd>Capture microphone (also Shift+Click AUDIO)</dd>
     <dt>B / F</dt><dd>Test blast / fullscreen</dd>
+    <dt>VR</dt><dd>With a tethered headset (Quest Link or Air Link), the VR button puts the log on a curved wall around you. Trigger: next shader. Grip: next view. Thumbstick left or right: narrower or wider wall; up or down: text size</dd>
     <dt>? / H / Escape</dt><dd>Open or close help / close this guide</dd>
   </dl>
   <p><strong>Audio:</strong> SYS and MIC are silent analyser taps: zero echo. FILE (drop an audio file) and SYNTH play through your speakers. Click AUDIO again to stop its input.</p>
@@ -294,6 +296,16 @@
   const MAX_LINE_CHARS = 2048;
   const MAX_RENDER_WIDTH = 2240;
   const MAX_RENDER_PIXELS = 2_600_000;
+  // The VR wall (section 11) lays the log out at its own size, not the desktop
+  // window's, so a small window still reads in the headset. Under the caps above
+  // that is 2149 x 1209 pixels, about 20 pixels per degree on the default wall.
+  const VR_CSS_W = 1600;
+  const VR_CSS_H = 900;
+  const VR_WALL_RADIUS_M = 2.6;
+  const VR_WALL_SEGMENTS = 64;
+  const VR_ARC_MIN_DEG = 80;
+  const VR_ARC_MAX_DEG = 160;
+  const VR_ARC_DEFAULT_DEG = 110;
   const SPECTRUM_BINS = 48;
   const WAVE_SAMPLES = 160;
   const AUDIO_TEX_WIDTH = 256;
@@ -498,6 +510,8 @@
     nvmlUnavailable: false,
     fboReady: false,
     contextLost: false,
+    // True while a headset session draws the log on the VR wall (section 11).
+    vrLayout: false,
     fps: 30,
   };
 
@@ -2584,9 +2598,10 @@
   }
 
   function getLogBottom(vh, logTop, vw = window.innerWidth) {
-    const dockTop = controlDock.getBoundingClientRect?.().top;
+    // The headset never shows the dock, so the VR wall keeps no room for it.
+    const dockTop = state.vrLayout ? NaN : controlDock.getBoundingClientRect?.().top;
     let controlsTop = Number.isFinite(dockTop) && dockTop > 0 ? dockTop : vh - 48;
-    const moreRect = dockMore.open ? dockMoreTools.getBoundingClientRect?.() : null;
+    const moreRect = !state.vrLayout && dockMore.open ? dockMoreTools.getBoundingClientRect?.() : null;
     if (Number.isFinite(moreRect?.top) && moreRect.height > 0 && moreRect.width > 0) {
       controlsTop = Math.min(controlsTop, moreRect.top);
     }
@@ -3622,9 +3637,11 @@ void main() {
   }
 
   function resizePipelines(forceRebuild = false) {
-    const cssW = Math.max(320, window.innerWidth || 320);
-    const cssH = Math.max(200, window.innerHeight || 200);
-    const rawDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    // In a headset the log is laid out for the wall at the full 1.5 ceiling, still
+    // inside the width and pixel caps below.
+    const cssW = state.vrLayout ? VR_CSS_W : Math.max(320, window.innerWidth || 320);
+    const cssH = state.vrLayout ? VR_CSS_H : Math.max(200, window.innerHeight || 200);
+    const rawDpr = state.vrLayout ? 1.5 : Math.min(window.devicePixelRatio || 1, 1.5);
     let w = Math.max(320, Math.floor(cssW * rawDpr));
     let h = Math.max(200, Math.floor(cssH * rawDpr));
 
@@ -3692,6 +3709,11 @@ void main() {
         cancelAnimationFrame(rafId);
         rafId = 0;
       }
+      // The VR wall's GL objects die with the context. Entering VR can lose and
+      // restore it on purpose (makeXRCompatible moving to the headset's GPU), so
+      // only a session already running is ended here (Codex r1, 2026-10-31).
+      forgetVrGl();
+      if (xr.session && !xr.entering) xr.session.end().catch(() => {});
     });
 
     glCanvas.addEventListener("webglcontextrestored", () => {
@@ -3719,8 +3741,19 @@ void main() {
   let fpsTimerMs = performance.now();
   let pingPong = false;
 
+  // The headset session (section 11). While one is starting or running, the
+  // headset's own frame loop draws the page and the window loop stays off.
+  const xr = {
+    session: null, entering: false, refSpace: null,
+    prog: null, vao: null, buf: null, mvpLoc: null, wallLoc: null,
+    wall: null, meshKey: "", wallDirty: true, stickAtMs: 0,
+    arcDeg: Math.min(VR_ARC_MAX_DEG, Math.max(VR_ARC_MIN_DEG,
+      Number(storageGet("logblaster.vrArcDeg", String(VR_ARC_DEFAULT_DEG))) || VR_ARC_DEFAULT_DEG)),
+  };
+
   function scheduleNextFrame() {
-    if (!rafId && !document.hidden && !state.contextLost && !state.shuttingDown) {
+    if (!rafId && !document.hidden && !state.contextLost && !state.shuttingDown &&
+        !xr.session && !xr.entering) {
       rafId = requestAnimationFrame(renderFrame);
     }
   }
@@ -3759,18 +3792,26 @@ void main() {
     return isAnimated ? 32.0 : 65.0;
   }
 
+  /** True when the eco governor says the next content frame is due. */
+  function contentFrameDue(nowMs) {
+    const minInterval = targetFrameIntervalMs(nowMs);
+    return !(minInterval > 0 && (nowMs - lastDrawMs) < minInterval);
+  }
+
   function renderFrame(nowMs) {
     rafId = 0;
-    if (document.hidden || state.contextLost) {
+    if (document.hidden || state.contextLost || xr.session || xr.entering) {
       return;
     }
     scheduleNextFrame();
+    if (!contentFrameDue(nowMs)) return;
+    drawContentFrame(nowMs, null);
+  }
 
-    const minInterval = targetFrameIntervalMs(nowMs);
-    if (minInterval > 0 && (nowMs - lastDrawMs) < minInterval) {
-      return;
-    }
-
+  /** One content frame: pulses, audio, the text raster, the feedback pass and
+   *  the composite, drawn to `targetFbo` (null is the page's own canvas; the
+   *  VR wall passes its texture's framebuffer). */
+  function drawContentFrame(nowMs, targetFbo) {
     const dtSec = lastDrawMs > 0 ? Math.min(0.12, Math.max(0.001, (nowMs - lastDrawMs) / 1000)) : 0.016;
     lastDrawMs = nowMs;
 
@@ -3854,8 +3895,8 @@ void main() {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
-    // PASS 2 -> Final Audio-Reactive GPU Composite
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // PASS 2 -> Final Audio-Reactive GPU Composite (the page, or the VR wall's texture)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo);
     gl.viewport(0, 0, w, h);
     gl.useProgram(compositeProg);
 
@@ -3893,6 +3934,276 @@ void main() {
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
+
+  // =========================================================================
+  // 11. VR WALL: THE SAME LOG ON A CURVED WALL IN A TETHERED HEADSET
+  // =========================================================================
+  // Quest Link or Air Link: the PC's own browser runs this page at localhost,
+  // which WebXR counts as a secure context. Each content frame is the flat
+  // page's own (drawContentFrame), laid out at VR_CSS_W x VR_CSS_H and
+  // composited into the wall's texture at the eco governor's pace. Every
+  // headset frame draws that texture on a curved wall fixed in the room: the
+  // "local" space's origin is where the head was when the session began, so the
+  // wall stays put when the head turns. Trigger: next shader. Grip: next view.
+  // Thumbstick left or right: narrower or wider wall; up or down: text size.
+  const btnVR = document.getElementById("btnVR");
+
+  const WALL_VERT = `#version 300 es
+precision highp float;
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec2 a_uv;
+uniform mat4 u_mvp;
+out vec2 v_uv;
+void main() {
+  v_uv = a_uv;
+  gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+`;
+
+  const WALL_FRAG = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_wall;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(texture(u_wall, v_uv).rgb, 1.0);
+}
+`;
+
+  /** Column-major 4x4 product a * b, the layout WebXR's matrices use. */
+  function mat4Multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let c = 0; c < 4; c++) {
+      for (let r = 0; r < 4; r++) {
+        out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] +
+          a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+      }
+    }
+    return out;
+  }
+
+  /** Drops the wall's GL objects; they are rebuilt on the next headset frame. */
+  function forgetVrGl() {
+    xr.prog = null; xr.vao = null; xr.buf = null;
+    xr.mvpLoc = null; xr.wallLoc = null;
+    xr.wall = null; xr.meshKey = ""; xr.wallDirty = true;
+  }
+
+  function freeVrWall() {
+    if (gl && !state.contextLost && xr.wall) {
+      try { gl.deleteFramebuffer(xr.wall.fbo); gl.deleteTexture(xr.wall.tex); } catch (_) {}
+    }
+    xr.wall = null;
+    xr.meshKey = "";
+  }
+
+  /** The wall's program, its texture at the current raster size, and its mesh
+   *  for the current arc. False when the GPU cannot make them. */
+  function ensureVrWall() {
+    if (!xr.prog) {
+      xr.prog = createProgram(WALL_VERT, WALL_FRAG);
+      if (!xr.prog) return false;
+      xr.mvpLoc = gl.getUniformLocation(xr.prog, "u_mvp");
+      xr.wallLoc = gl.getUniformLocation(xr.prog, "u_wall");
+      xr.buf = gl.createBuffer();
+      xr.vao = gl.createVertexArray();
+      gl.bindVertexArray(xr.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, xr.buf);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
+      gl.bindVertexArray(null);
+      xr.meshKey = "";
+    }
+    const w = glCanvas.width;
+    const h = glCanvas.height;
+    if (!xr.wall || xr.wall.w !== w || xr.wall.h !== h) {
+      freeVrWall();
+      const target = makeRenderTarget(w, h);
+      if (!target.complete) {
+        try { gl.deleteFramebuffer(target.fbo); gl.deleteTexture(target.tex); } catch (_) {}
+        return false;
+      }
+      xr.wall = { fbo: target.fbo, tex: target.tex, w, h };
+      xr.wallDirty = true;
+    }
+    const key = `${w}x${h}@${xr.arcDeg}`;
+    if (xr.meshKey !== key) {
+      // A cylinder segment at eye height, as tall as the texture's aspect allows;
+      // texture v runs bottom to top, as the composite wrote it.
+      const arc = xr.arcDeg * Math.PI / 180;
+      const half = (VR_WALL_RADIUS_M * arc) / (w / h) / 2;
+      const data = new Float32Array((VR_WALL_SEGMENTS + 1) * 2 * 5);
+      let o = 0;
+      for (let i = 0; i <= VR_WALL_SEGMENTS; i++) {
+        const u = i / VR_WALL_SEGMENTS;
+        const a = (u - 0.5) * arc;
+        const x = VR_WALL_RADIUS_M * Math.sin(a);
+        const z = -VR_WALL_RADIUS_M * Math.cos(a);
+        data.set([x, -half, z, u, 0], o); o += 5;
+        data.set([x, half, z, u, 1], o); o += 5;
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, xr.buf);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+      xr.meshKey = key;
+    }
+    return true;
+  }
+
+  /** Feedback on the wall itself: the dock's toasts never reach the headset. */
+  function vrNote(text) {
+    injectLocalLine(`[LogBlaster VR] ${text}`);
+  }
+
+  function setVrArc(deg) {
+    const next = Math.min(VR_ARC_MAX_DEG, Math.max(VR_ARC_MIN_DEG, deg));
+    if (next === xr.arcDeg) return;
+    xr.arcDeg = next;
+    storageSet("logblaster.vrArcDeg", next);
+    vrNote(`WALL ${next} DEGREES`);
+  }
+
+  function vrInputs(session, nowMs) {
+    // One step per push, with a rest, from whichever thumbstick moves.
+    if (nowMs - xr.stickAtMs < 320) return;
+    for (const source of session.inputSources || []) {
+      const pad = source.gamepad;
+      if (!pad || !pad.axes) continue;
+      const x = pad.axes.length >= 4 ? pad.axes[2] : (pad.axes[0] || 0);
+      const y = pad.axes.length >= 4 ? pad.axes[3] : (pad.axes[1] || 0);
+      if (Math.abs(x) > 0.7 && Math.abs(x) >= Math.abs(y)) {
+        setVrArc(xr.arcDeg + (x > 0 ? 10 : -10));
+        xr.stickAtMs = nowMs;
+        return;
+      }
+      if (Math.abs(y) > 0.7) {
+        // Up is negative on WebXR thumbsticks: up makes the text bigger.
+        document.getElementById(y < 0 ? "btnFontUp" : "btnFontDown").click();
+        vrNote(`TEXT ${state.fontSize}px`);
+        xr.stickAtMs = nowMs;
+        return;
+      }
+    }
+  }
+
+  function vrFrame(nowMs, frame) {
+    const session = xr.session;
+    if (!session) return;
+    session.requestAnimationFrame(vrFrame);
+    if (!gl || state.contextLost) return;
+    vrInputs(session, nowMs);
+    if (!ensureVrWall()) return;
+    if (xr.wallDirty || contentFrameDue(nowMs)) {
+      drawContentFrame(nowMs, xr.wall.fbo);
+      xr.wallDirty = false;
+    }
+    const pose = frame.getViewerPose(xr.refSpace);
+    if (!pose) return;
+    const layer = session.renderState.baseLayer;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+    gl.clearColor(0.0196, 0.0196, 0.0157, 1.0);   // the COMFY B&Y obsidian
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(xr.prog);
+    gl.bindVertexArray(xr.vao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, xr.wall.tex);
+    gl.uniform1i(xr.wallLoc, 0);
+    for (const view of pose.views) {
+      const vp = layer.getViewport(view);
+      gl.viewport(vp.x, vp.y, vp.width, vp.height);
+      gl.uniformMatrix4fv(xr.mvpLoc, false, mat4Multiply(view.projectionMatrix, view.transform.inverse.matrix));
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, (VR_WALL_SEGMENTS + 1) * 2);
+    }
+    gl.bindVertexArray(null);
+  }
+
+  function syncVrButton() {
+    btnVR.textContent = xr.session ? "EXIT VR" : (xr.entering ? "VR..." : "VR");
+    btnVR.classList.toggle("is-active", Boolean(xr.session));
+  }
+
+  function onVrEnd(session) {
+    const wasRunning = xr.session === session;
+    if (!wasRunning && !xr.entering) return;
+    // A session that ends while still starting is settled by enterVR itself.
+    xr.entering = false;
+    if (!wasRunning) return;
+    xr.session = null;
+    xr.refSpace = null;
+    freeVrWall();
+    state.vrLayout = false;
+    resizePipelines(false);
+    lastDrawMs = 0;
+    state.textDirty = true;
+    syncVrButton();
+    vrNote("OFF");
+    scheduleNextFrame();
+  }
+
+  async function enterVR() {
+    if (xr.session || xr.entering || !gl || !navigator.xr) return;
+    xr.entering = true;
+    syncVrButton();
+    let session = null;
+    let ended = false;
+    try {
+      // Asked for first, inside the click: the context switch below can take
+      // long enough to spend the page's user activation (Codex r1).
+      session = await navigator.xr.requestSession("immersive-vr");
+      session.addEventListener("end", () => { ended = true; onVrEnd(session); });
+      if (gl.makeXRCompatible) await gl.makeXRCompatible();
+      if (state.contextLost) throw new Error("the WebGL context was lost and not restored");
+      session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+      xr.refSpace = await session.requestReferenceSpace("local");
+    } catch (err) {
+      xr.entering = false;
+      xr.refSpace = null;
+      if (session && !ended) { try { await session.end(); } catch (_) {} }
+      syncVrButton();
+      showToast(`VR COULD NOT START (${err && err.message ? err.message : err})`);
+      scheduleNextFrame();
+      return;
+    }
+    if (ended) return;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    xr.session = session;
+    xr.entering = false;
+    session.addEventListener("selectstart", () => {
+      setPreset(state.preset + 1);
+      vrNote(`SHADER ${state.preset + 1}: ${PRESET_NAMES[state.preset]}`);
+    });
+    session.addEventListener("squeezestart", () => {
+      cycleViewMode();
+      vrNote(`VIEW ${state.viewMode}`);
+    });
+    state.vrLayout = true;
+    resizePipelines(false);
+    lastDrawMs = 0;
+    state.textDirty = true;
+    xr.wallDirty = true;
+    syncVrButton();
+    vrNote(`ON: wall ${xr.arcDeg} degrees. Trigger: next shader. Grip: next view. ` +
+      "Thumbstick: wall width and text size.");
+    session.requestAnimationFrame(vrFrame);
+  }
+
+  // The button appears only where a headset session can really start: a browser
+  // with WebXR, a reported immersive-vr device, and this page's WebGL2 context.
+  btnVR.hidden = true;
+  btnVR.addEventListener("click", () => {
+    if (xr.session) xr.session.end().catch(() => {});
+    else enterVR();
+  });
+  if (gl && typeof navigator !== "undefined" && navigator.xr &&
+      typeof navigator.xr.isSessionSupported === "function" && typeof XRWebGLLayer !== "undefined") {
+    navigator.xr.isSessionSupported("immersive-vr")
+      .then((supported) => { btnVR.hidden = !supported; })
+      .catch(() => {});
+  }
+  window.addEventListener("pagehide", () => {
+    if (xr.session) xr.session.end().catch(() => {});
+  });
 
   injectLocalLine("[LogBlaster] Audio-Reactive WebGL2 GPU Log Visualizer ready (1-4 Shaders | V View | Y Comfy B&Y | T Tint | / Filter | E Errors | M Synth | A Audio | B Blast)");
   injectLocalLine(`[LogBlaster] View: ${state.viewMode} | Palette: ${TINT_NAMES[state.tintMode]} | WebGL2: ${state.shaderRendererName} | FPS: ${state.fpsMode} | Redaction: ${state.redactEnabled ? "ON" : "OFF"}`);

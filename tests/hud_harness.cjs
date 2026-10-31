@@ -126,7 +126,9 @@ async function makeHud(options = {}) {
     crypto: { randomUUID: () => "audit-stub" },
     performance: { now: () => now }, console,
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
-    navigator: { clipboard: { async writeText(text) { copied = text; } } },
+    // options.xr stands in for navigator.xr; options.xrLayer adds an XRWebGLLayer.
+    navigator: { clipboard: { async writeText(text) { copied = text; } }, ...(options.xr ? { xr: options.xr } : {}) },
+    ...(options.xrLayer ? { XRWebGLLayer: class {} } : {}),
     setTimeout(fn, delay) {
       const id = ++nextTimerId;
       timers.push({ id, fn, delay, canceled: false });
@@ -168,6 +170,25 @@ async function makeHud(options = {}) {
     setFetchFailure(value) { fetchFailure = value; },
     async setReducedMotion(value) { motionQuery.matches = value; await motionQuery.emit("change"); },
     copied: () => copied };
+}
+
+// The VR button shows only where a headset session can really start. This
+// harness has no WebGL2, so a reported headset must still leave it hidden and
+// must never be asked for a session.
+async function verifyVrButtonGate() {
+  const plain = await makeHud();
+  assert.equal(plain.element("btnVR").hidden, true, "no WebXR: the VR button stays hidden");
+  const asked = [];
+  const xr = {
+    async isSessionSupported(mode) { asked.push(["supported", mode]); return true; },
+    async requestSession(mode) { asked.push(["session", mode]); throw new Error("must not be asked"); },
+  };
+  const headset = await makeHud({ xr, xrLayer: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(headset.element("btnVR").hidden, true, "no WebGL2: the VR button stays hidden");
+  await headset.element("btnVR").click();
+  assert.deepEqual(asked, [], "without WebGL2 the page never asks the headset for anything");
+  assert.equal(headset.state.vrLayout, false);
 }
 
 async function verifyDemoOwnership() {
@@ -700,5 +721,6 @@ async function verifyTerminalTiming() {
   await verifyTerminalTiming();
   await verifyProductImprovements();
   await verifyDemoOwnership();
+  await verifyVrButtonGate();
   console.log("HUD_INTEGRATION_OK");
 })().catch(error => { console.error(error); process.exitCode = 1; });
