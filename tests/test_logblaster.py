@@ -253,18 +253,20 @@ def test_http_routes_observer_tap_and_hardened_contracts() -> None:
 
     assert "createAnalyser" in html_body
     assert "u_audioTex" in html_body
-    # Zero echo: every audio wiring goes through wireAudio, so these three pins
-    # cover the topology (the analyser is never wired to the speakers).
+    # Zero echo in the source: the analyser is never wired to the speakers. The
+    # HUD harness checks the same graph as built, through wireAudio itself.
     assert "wireAudio(analyser, audioCtx.destination)" not in html_body
     assert "wireAudio(externalSourceNode, analyser)" in html_body
     assert "wireAudio(synthMasterGain, audioCtx.destination)" in html_body
-    # The registry's lexical scanner flagged 1.1.1 for a dotted connect call in
-    # this page ($socket3) and a dotted bind call in js/log_blaster.js
-    # ($socket4); neither spelling may come back in a shipped file.
-    assert re.search(r"\.connect\s*\(", html_body) is None
-    ext_src = (REPO_ROOT / "js" / "log_blaster.js").read_text(encoding="utf-8")
-    assert re.search(r"\.bind\s*\(", ext_src) is None
-    assert re.search(r"\.connect\s*\(", ext_src) is None
+    # The registry's lexical scanner flagged 1.1.1 for a dotted connect call
+    # ($socket3, the page's audio graph) and a dotted bind call ($socket4, the
+    # extension); neither spelling may come back in any shipped code file.
+    shipped_code = [*REPO_ROOT.glob("*.py"), *(REPO_ROOT / "js").glob("*.js"),
+                    *(REPO_ROOT / "web_app").glob("*.html")]
+    assert len(shipped_code) >= 5
+    for path in shipped_code:
+        text = path.read_text(encoding="utf-8")
+        assert re.search(r"\.(?:connect|bind)\s*\(", text) is None, path.name
 
     telem_resp: web.Response = asyncio.run(
         stub_server.routes.handlers["/logblaster/telemetry"](None)

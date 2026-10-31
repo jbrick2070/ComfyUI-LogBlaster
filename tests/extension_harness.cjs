@@ -57,7 +57,8 @@ async function makeExtension(useFileUrl = true, { desktop = false, observers = 0
   let openCount = 0;
   const api = {
     api_base: "/comfy",
-    queuePrompt(...args) { return submit(...args); },
+    // Forwards its own `this`, so a check can see what the hook calls it with.
+    queuePrompt(...args) { return submit.apply(this, args); },
     addEventListener(type, fn) { apiHandlers[type] = fn; },
   };
   if (useFileUrl) api.fileURL = (route) => "/comfy" + route;
@@ -148,8 +149,16 @@ async function makeExtension(useFileUrl = true, { desktop = false, observers = 0
   assert.equal(env.popup.location.href, "/comfy/logblaster");
 
   env.channels[0].postMessage = () => { throw new Error("channel unavailable"); };
-  env.setSubmit(async () => result);
-  assert.equal(await env.api.queuePrompt(0, {}), result);
+  // The hook calls ComfyUI's own queuePrompt with the api as `this` and the
+  // caller's arguments untouched (real ComfyUI's method needs its `this`).
+  let seen = null;
+  env.setSubmit(async function (...args) { seen = { self: this, args }; return result; });
+  const payload = {};
+  assert.equal(await env.api.queuePrompt(0, payload), result);
+  assert.equal(seen.self, env.api, "the original queuePrompt runs with the api as this");
+  assert.equal(seen.args.length, 2);
+  assert.equal(seen.args[0], 0);
+  assert.equal(seen.args[1], payload, "the caller's arguments reach it unchanged");
   assert.equal(env.harness.TELEMETRY_URL, "/comfy/logblaster/telemetry");
 
   // Pop Out from the dock, in a browser (2026-10-30): the docked HUD answers the

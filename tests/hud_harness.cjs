@@ -148,7 +148,7 @@ async function makeHud(options = {}) {
   }
   class AudioContextStub {
     constructor() { this.currentTime = 1; this.state = "running"; this.destination = {}; }
-    createAnalyser() { return new AudioNodeStub(); }
+    createAnalyser() { const node = new AudioNodeStub(); node.kind = "analyser"; return node; }
     createGain() { return new AudioNodeStub(); }
     createOscillator() { return new AudioNodeStub(); }
     createBiquadFilter() { return new AudioNodeStub(); }
@@ -949,6 +949,15 @@ async function verifyProductImprovements() {
   const audio = await makeHud();
   audio.state.synthEnabled = true;
   audio.ensureAudioGraph();
+  // Zero echo, as wired: the analyser is a silent tap that never reaches the
+  // speakers, and the synth reaches both (pins wireAudio's own body too).
+  const { audioCtx, synthMasterGain } = audio.synthNodes();
+  const tap = audio.audioNodes.find(node => node.kind === "analyser");
+  assert.ok(tap, "the graph has its analyser");
+  assert.equal(tap.connections.includes(audioCtx.destination), false, "the analyser never reaches the speakers");
+  assert.deepEqual(tap.connections, [], "the analyser feeds nothing");
+  assert.ok(synthMasterGain.connections.includes(tap), "the synth feeds the analyser");
+  assert.ok(synthMasterGain.connections.includes(audioCtx.destination), "the synth is audible");
   audio.state.blastRate = 1;
   audio.synthNodes().droneGain.gain.value = 0.2;
   audio.document.hidden = true;
