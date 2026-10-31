@@ -157,7 +157,11 @@ try:
     page.call("Page.navigate", url=URL)
     time.sleep(4)
     page.js("document.getElementById('btnTestBlast').click()")
+    # The synth builds the Web Audio graph, so a real browser runs every wiring
+    # call; a wiring that throws shows up in the "no page errors" check below.
+    page.js("document.getElementById('btnSynth').click()")
     time.sleep(2.5)
+    check("the synth's audio graph is built", page.js("document.getElementById('btnSynth').textContent") == "SYNTH: ON")
     check("VR button shows with WebGL2 and a reported headset", page.js("!document.getElementById('btnVR').hidden"))
     page.shot("flat_before.png")
     flat_size = page.js("[document.getElementById('glCanvas').width, document.getElementById('glCanvas').height]")

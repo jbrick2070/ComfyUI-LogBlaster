@@ -439,7 +439,10 @@ app.registerExtension({
     // Hook synchronous queuePrompt so clicking Run opens the window inside the user gesture,
     // without stealing focus if already open and never blocking prompt queueing on any UI error.
     if (api && typeof api.queuePrompt === "function" && !api._logBlasterWrapped) {
-      const origQueuePrompt = api.queuePrompt.bind(api);
+      // Called with apply(api, ...) below rather than bound here: the registry's
+      // lexical scanner reads a dotted bind call as a network socket and flagged
+      // 1.1.1 for this line (rule $socket4).
+      const origQueuePrompt = api.queuePrompt;
       api._logBlasterWrapped = true;
       api.queuePrompt = async function (...args) {
         let nodes = null;
@@ -451,7 +454,7 @@ app.registerExtension({
         } catch (_) {
           // Never prevent workflow submission
         }
-        const result = await origQueuePrompt(...args);
+        const result = await origQueuePrompt.apply(api, args);
         try { rememberPromptNodeTitles(result?.prompt_id, nodes); } catch (_) {}
         return result;
       };

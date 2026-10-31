@@ -162,6 +162,8 @@ async function makeHud(options = {}) {
   window.top = options.framed ? new EventStub() : window;
   const context = vm.createContext({
     window, document, location, URL, URLSearchParams, AbortController,
+    // The page wires its audio graph through AudioNode.prototype's own method.
+    AudioNode: AudioNodeStub,
     crypto: { randomUUID: () => "audit-stub" },
     performance: { now: () => now }, console,
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
