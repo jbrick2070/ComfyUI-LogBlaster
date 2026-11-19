@@ -360,7 +360,8 @@ class AppleGpuReader:
             cf.CFDictionaryGetValue.restype = vp
             cf.CFDictionaryGetValue.argtypes = [vp, vp]
             cf.CFNumberGetValue.restype = ctypes.c_bool
-            cf.CFNumberGetValue.argtypes = [vp, ctypes.c_int, vp]
+            # CFNumberType is a CFIndex (signed long) on 64-bit macOS.
+            cf.CFNumberGetValue.argtypes = [vp, ctypes.c_long, vp]
             cf.CFGetTypeID.restype = ctypes.c_ulong
             cf.CFGetTypeID.argtypes = [vp]
             cf.CFNumberGetTypeID.restype = ctypes.c_ulong
@@ -375,8 +376,15 @@ class AppleGpuReader:
                                           ctypes.c_size_t]
             self._iokit, self._cf, self._libc = iokit, cf, libc
             self._total_mib = self._sysctl_u64(b"hw.memsize") // (1024 * 1024)
-            brand = self._sysctl_str(b"machdep.cpu.brand_string") or "Apple"
-            self._gpu_name = "%s GPU" % brand
+            if self._total_mib <= 0:
+                # An incomplete start is a failed start: retried after the
+                # delay below, never cached as "ready" with no memory total
+                # (Codex review 2026-11-19).
+                raise RuntimeError("hw.memsize unreadable")
+            brand = self._sysctl_str(b"machdep.cpu.brand_string")
+            # Apple Silicon: the GPU is part of the named chip. An Intel Mac's
+            # brand string names its CPU, which says nothing about its GPU.
+            self._gpu_name = ("%s GPU" % brand) if brand.startswith("Apple") else "Mac GPU"
             return True
         except Exception:
             self._iokit = self._cf = self._libc = None
@@ -428,19 +436,33 @@ class AppleGpuReader:
             self._cf.CFRelease(cf_key)
 
     def _read_stats(self) -> Optional[Dict[str, int]]:
-        """Utilization %, in-use bytes and core count of the first GPU, or None."""
+        """Utilization %, in-use bytes and core count of the GPU doing the work,
+        or None. Apple Silicon has one IOAccelerator; an Intel Mac can have two
+        (integrated + discrete) in any enumeration order, so every adapter
+        with statistics is read and the one holding the most memory -- the
+        active renderer -- is reported, busier first on a tie (Codex review
+        2026-11-19: taking the first one could report an idle adapter)."""
+        found = self._read_all_adapters()
+        if not found:
+            return None
+        best = max(found, key=lambda a: (a["in_use"], a["util"]))
+        return dict(best, adapters=len(found))
+
+    def _read_all_adapters(self) -> list:
+        """Every IOAccelerator that publishes the two statistics, read once."""
         iokit, cf = self._iokit, self._cf
         matching = iokit.IOServiceMatching(b"IOAccelerator")  # consumed by the next call
         if not matching:
-            return None
+            return []
         iterator = ctypes.c_uint32(0)
         if iokit.IOServiceGetMatchingServices(0, matching, ctypes.byref(iterator)) != 0:
-            return None
+            return []
+        found: list = []
         try:
             while True:
                 service = iokit.IOIteratorNext(iterator.value)
                 if not service:
-                    return None
+                    return found
                 try:
                     stats = self._property(service, "PerformanceStatistics")
                     if not stats:
@@ -461,7 +483,7 @@ class AppleGpuReader:
                             cores = self._int_of(cores_ref) or 0
                         finally:
                             cf.CFRelease(cores_ref)
-                    return {"util": util, "in_use": in_use, "cores": cores}
+                    found.append({"util": util, "in_use": in_use, "cores": cores})
                 finally:
                     iokit.IOObjectRelease(service)
         finally:
@@ -494,7 +516,9 @@ class AppleGpuReader:
                 return self._unavailable(now)
             used_mib = max(0, int(stats["in_use"]) // (1024 * 1024))
             name = self._gpu_name
-            if stats["cores"] > 0:
+            if stats.get("adapters", 1) > 1:
+                name = "%s (1 of %d)" % (name, stats["adapters"])
+            elif stats["cores"] > 0:
                 name = "%s (%d-core)" % (name, stats["cores"])
             payload = {
                 "ok": True,

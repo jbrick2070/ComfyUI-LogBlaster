@@ -639,7 +639,34 @@ def test_the_apple_reader_off_a_mac_is_unavailable_not_an_error() -> None:
     assert reader.snapshot()["available"] is False
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS IOKit")
+def test_with_two_gpus_the_one_doing_the_work_is_reported(monkeypatch) -> None:
+    """An Intel Mac can list an idle integrated GPU before the discrete one
+    (Codex review 2026-11-19); the adapter holding the most memory wins."""
+    telemetry = _load_pkg_module("lb_telemetry_two_gpus", "telemetry.py")
+    reader = telemetry.AppleGpuReader(cache_ttl_sec=0)
+    reader._iokit = object()            # libraries "loaded"
+    reader._total_mib = 32768
+    reader._gpu_name = "Mac GPU"
+    monkeypatch.setattr(reader, "_read_all_adapters", lambda: [
+        {"util": 0, "in_use": 64 * 1024 * 1024, "cores": 0},
+        {"util": 55, "in_use": 3 * 1024 ** 3, "cores": 0},
+    ])
+    snap = reader.snapshot()
+    assert snap["gpu_util"] == 55 and snap["vram_used_mib"] == 3072
+    assert snap["gpu_name"] == "Mac GPU (1 of 2)"
+
+
+def test_a_start_without_a_memory_total_is_retried_not_cached() -> None:
+    """hw.memsize failing at start must not leave the reader 'ready' with no
+    total for good (Codex review 2026-11-19): the start counts as failed."""
+    src = (REPO_ROOT / "telemetry.py").read_text(encoding="utf-8")
+    start = src.index("self._total_mib = self._sysctl_u64(b\"hw.memsize\")")
+    window = src[start:start + 400]
+    assert "if self._total_mib <= 0:" in window and "raise RuntimeError" in window
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or __import__("platform").machine() != "arm64",
+                    reason="needs an Apple Silicon Mac (IOKit GPU statistics)")
 def test_the_apple_reader_reads_a_real_gpu() -> None:
     telemetry = _load_pkg_module("lb_telemetry_apple_live", "telemetry.py")
     snap = telemetry.AppleGpuReader(cache_ttl_sec=0).snapshot()
