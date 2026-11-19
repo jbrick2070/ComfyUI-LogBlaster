@@ -29,6 +29,9 @@ async function makeHud(options = {}) {
   let copied = "";
   let nvmlAvailable = false;
   let fetchFailure = false;
+  // options.telemetry: the /logblaster/telemetry body (fetch's own `options`
+  // parameter shadows this function's, so it is captured here by name).
+  const telemetryOverride = options.telemetry || null;
   const storage = options.storage || new Map();
   const motionQuery = new EventStub();
   motionQuery.matches = Boolean(options.reducedMotion);
@@ -200,8 +203,10 @@ async function makeHud(options = {}) {
       if (fetchFailure) throw new Error("Simulated server unavailable");
       let payload = {};
       if (url.endsWith("/logblaster/telemetry")) {
-        payload = { available: nvmlAvailable, gpu_name: "GPU stub", vram_total_mib: 8192,
-          vram_used_mib: 2048, gpu_util: 42, metrics_mode: "nvml" };
+        payload = telemetryOverride
+          ? { available: nvmlAvailable, ...telemetryOverride }
+          : { available: nvmlAvailable, gpu_name: "GPU stub", vram_total_mib: 8192,
+            vram_used_mib: 2048, gpu_util: 42, metrics_mode: "nvml" };
       } else if (url.endsWith("/system_stats")) {
         payload = { devices: [{ type: "cuda", name: "GPU stub", vram_total: 8 * 1024 ** 3, vram_free: 6 * 1024 ** 3 }] };
       } else if (url.endsWith("/internal/logs/raw")) payload = { entries: [] };
@@ -1009,6 +1014,28 @@ function viewedLine(hud) {
   return lines[hud.getViewEndIndex(lines) - 1];
 }
 
+// Apple Silicon (telemetry.AppleGpuReader, 2026-11-19): the server reports
+// metrics_mode "apple_gpu" with real GPU busy % and unified memory. The HUD
+// keeps the mode, draws GPU % and memory, and names the source instead of a
+// temperature and power it cannot read (root-only on macOS).
+async function verifyAppleTelemetry() {
+  const mac = await makeHud({ telemetry: {
+    ok: true, metrics_mode: "apple_gpu", gpu_name: "Apple M6 GPU (12-core)",
+    gpu_util: 80, mem_util: 52, vram_used_mib: 8504, vram_total_mib: 16384,
+    temp_c: 0, power_w: 0, temp_available: false, power_available: false } });
+  mac.setNvmlAvailable(true);
+  mac.setTime(40000);
+  await mac.pollTelemetry();
+  assert.equal(mac.state.gpuTelemetry.metrics_mode, "apple_gpu");
+  assert.equal(mac.state.nvmlUnavailable, false);
+  mac.draws.length = 0;
+  mac.renderTextTexture(40000, 0.016);
+  assert.ok(mac.draws.some(t => t === "COMPUTE: Apple M6 GPU (12-core)"), mac.draws.join(" | "));
+  assert.ok(mac.draws.some(t => t.startsWith("GPU  80% | MEM 8.3/16.0G")), mac.draws.join(" | "));
+  assert.ok(mac.draws.includes("SOURCE: APPLE IOKIT (UNIFIED MEM)"));
+  assert.ok(!mac.draws.some(t => t.startsWith("TMP ")), "no temperature is drawn on a Mac");
+}
+
 async function verifyTerminalTiming() {
   const hud = await makeHud();
   const event = (time, type, data) => {
@@ -1205,6 +1232,7 @@ async function verifyTerminalTiming() {
   assert.ok(hud.fetches.some(x => x.url === "/comfy/internal/logs/subscribe" && x.options.keepalive));
   assert.ok(hud.fetches.every(x => x.url.startsWith("/comfy/")));
   await verifyTerminalTiming();
+  await verifyAppleTelemetry();
   await verifyProductImprovements();
   await verifyDemoOwnership();
   await verifyVrButtonGate();

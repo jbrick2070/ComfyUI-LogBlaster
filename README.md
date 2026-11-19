@@ -55,7 +55,7 @@ Restart ComfyUI — no Python packages to install and **0 MB extra PyTorch VRAM*
 
 - **`FPS: ECO | 60 | MAX` Frame Governor** (`ECO` default: **30 FPS** while blasting/audio-active, **15 FPS** when quiet/idle, **0 FPS** true `requestAnimationFrame` pause when hidden/minimized) + dirty-gated 2D canvas uploads + 4K render-target memory ceiling + `FX=0%` raw fast-blit path.
 - Requests `powerPreference: "low-power"` (`?gpu=high` opt-in) and honestly reports the active WebGL2 GPU adapter + live FPS in the top-right telemetry block.
-- Reads NVIDIA GPU utilization, VRAM, temperature, and watts via zero-subprocess, zero-`torch.cuda` `ctypes` NVML (`telemetry.py`), automatically falling back to ComfyUI `GET /system_stats` VRAM telemetry on macOS MPS, AMD ROCm, Intel XPU, or CPU.
+- Reads NVIDIA GPU utilization, VRAM, temperature, and watts via zero-subprocess, zero-`torch.cuda` `ctypes` NVML (`telemetry.py`). On Apple Silicon it reads the GPU's own utilization and the unified memory it holds from IOKit, the same zero-subprocess way (temperature and power are root-only on macOS, so they are not shown). AMD ROCm, Intel XPU and CPU hosts fall back to ComfyUI `GET /system_stats` VRAM telemetry.
 
 - Telemetry shows **STALE** after five seconds without a valid sample and **OFFLINE** after fifteen. A disconnected server shows outage time and a retry countdown. NVML recovers automatically after transient failures.
 

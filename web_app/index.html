@@ -498,7 +498,7 @@
     lastTelemetryOkMs: null,
     gpuTelemetry: {
       available: false,
-      metrics_mode: "nvml", // nvml | vram_only | unavailable
+      metrics_mode: "nvml", // nvml | apple_gpu | vram_only | unavailable
       gpu_name: "Detecting GPU...",
       gpu_util: 0,
       vram_used_mib: 0,
@@ -2802,6 +2802,13 @@
           ctx.fillText(`VRAM ${vramGib} / ${totGib} GiB (${Math.round(vramPct * 100)}%)`, rightX, 38);
           ctx.fillStyle = pal.dim;
           ctx.fillText("SOURCE: COMFY /system_stats", rightX, 54);
+        } else if (gt.metrics_mode === "apple_gpu") {
+          // Apple Silicon (telemetry.AppleGpuReader): the GPU's own busy % and
+          // the unified memory it holds. Temperature and power are root-only
+          // on macOS, so they are named as such rather than drawn as 0.
+          ctx.fillText(`GPU ${String(gt.gpu_util).padStart(3, " ")}% | MEM ${vramGib}/${totGib}G`, rightX, 38);
+          ctx.fillStyle = pal.dim;
+          ctx.fillText("SOURCE: APPLE IOKIT (UNIFIED MEM)", rightX, 54);
         } else {
           ctx.fillText(`GPU ${String(gt.gpu_util).padStart(3, " ")}% | VRAM ${vramGib}/${totGib}G`, rightX, 38);
           ctx.fillText(`TMP  ${String(gt.temp_c).padStart(2, " ")}C | PWR ${gt.power_w}W`, rightX, 54);

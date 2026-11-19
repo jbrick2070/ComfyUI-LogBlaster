@@ -616,3 +616,51 @@ def test_browser_script_integration(harness: str, sentinel: str) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert sentinel in result.stdout, f"Harness did not finish: {result.stdout}"
+
+
+# --- Apple Silicon telemetry (2026-11-19) ------------------------------------
+def test_macos_gets_the_apple_reader_and_everyone_else_nvml(monkeypatch) -> None:
+    telemetry = _load_pkg_module("lb_telemetry_platform", "telemetry.py")
+    monkeypatch.setattr(telemetry.sys, "platform", "darwin")
+    assert isinstance(telemetry._default_reader(), telemetry.AppleGpuReader)
+    for plat in ("win32", "linux"):
+        monkeypatch.setattr(telemetry.sys, "platform", plat)
+        assert isinstance(telemetry._default_reader(), telemetry.NvmlReader)
+
+
+def test_the_apple_reader_off_a_mac_is_unavailable_not_an_error() -> None:
+    telemetry = _load_pkg_module("lb_telemetry_apple_off", "telemetry.py")
+    if sys.platform == "darwin":
+        pytest.skip("this host is a Mac; the live test covers it")
+    reader = telemetry.AppleGpuReader(cache_ttl_sec=0)
+    snap = reader.snapshot()
+    assert snap["available"] is False and snap["metrics_mode"] == "unavailable"
+    assert reader._failed is True and reader._retry_at > 0   # no reload storm
+    assert reader.snapshot()["available"] is False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS IOKit")
+def test_the_apple_reader_reads_a_real_gpu() -> None:
+    telemetry = _load_pkg_module("lb_telemetry_apple_live", "telemetry.py")
+    snap = telemetry.AppleGpuReader(cache_ttl_sec=0).snapshot()
+    assert snap["available"] is True and snap["metrics_mode"] == "apple_gpu"
+    assert 0 <= snap["gpu_util"] <= 100
+    assert snap["vram_total_mib"] > 0 and 0 <= snap["vram_used_mib"] <= snap["vram_total_mib"]
+    assert snap["temp_available"] is False and snap["power_available"] is False
+    assert "/" not in snap["gpu_name"] and "\\" not in snap["gpu_name"]
+
+
+def test_telemetry_still_spawns_nothing() -> None:
+    """Zero-subprocess on every platform, the Apple path included: no process
+    module is imported and no os.system/os.popen call exists."""
+    import ast
+    tree = ast.parse((REPO_ROOT / "telemetry.py").read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            assert not (node.value.id == "os" and node.attr in ("system", "popen", "spawnv"))
+    assert not imported & {"subprocess", "multiprocessing", "pty"}

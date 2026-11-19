@@ -1,8 +1,10 @@
-"""Zero-subprocess, zero-CUDA-context GPU telemetry via NVML ctypes.
+"""Zero-subprocess, zero-CUDA-context GPU telemetry via ctypes.
 
-Reads live GPU utilization, VRAM usage, temperature, and power draw directly
-from ``nvml.dll`` / ``libnvidia-ml.so.1`` in ~0.03 ms without importing
-``torch``, touching PyTorch's CUDA allocator, or spawning ``nvidia-smi``.
+NVIDIA: reads live GPU utilization, VRAM usage, temperature, and power draw
+directly from ``nvml.dll`` / ``libnvidia-ml.so.1`` in ~0.03 ms without
+importing ``torch``, touching PyTorch's CUDA allocator, or spawning
+``nvidia-smi``. Apple Silicon: reads GPU utilization and GPU memory in use
+from IOKit's IOAccelerator statistics (``AppleGpuReader``), the same way.
 """
 
 from __future__ import annotations
@@ -302,7 +304,229 @@ class NvmlReader:
             return dict(payload)
 
 
-_DEFAULT_READER = NvmlReader()
+class AppleGpuReader:
+    """Apple Silicon GPU telemetry through IOKit, still zero-subprocess.
+
+    macOS publishes the GPU's own statistics on its IOAccelerator service
+    (the same dictionary `ioreg -c IOAccelerator` prints), readable without
+    root: ``Device Utilization %`` and ``In use system memory`` (bytes the GPU
+    holds in unified memory). Memory is unified, so the total is the machine's
+    RAM (``hw.memsize``). Temperature and power need root (powermetrics / the
+    SMC), so they are flagged unavailable rather than shown as a reading.
+    Read through ctypes like the NVML path: no ``ioreg`` process, no torch.
+    """
+
+    _KCF_UTF8 = 0x08000100      # kCFStringEncodingUTF8
+    _KCF_SINT64 = 4             # kCFNumberSInt64Type
+
+    def __init__(self, cache_ttl_sec: float = 0.4) -> None:
+        self._lock = threading.Lock()
+        self._cache_ttl = cache_ttl_sec
+        self._last_ts = 0.0
+        self._last_payload: Optional[Dict[str, Any]] = None
+        self._iokit: Any = None
+        self._cf: Any = None
+        self._libc: Any = None
+        self._failed = False
+        self._retry_at = 0.0
+        self._gpu_name = "Apple GPU"
+        self._total_mib = 0
+
+    # -- library setup -------------------------------------------------
+    def _ensure_libs(self) -> bool:
+        if self._iokit is not None:
+            return True
+        if self._failed and time.monotonic() < self._retry_at:
+            return False
+        try:
+            iokit = ctypes.CDLL(
+                "/System/Library/Frameworks/IOKit.framework/IOKit")
+            cf = ctypes.CDLL(
+                "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+            vp, u32 = ctypes.c_void_p, ctypes.c_uint32
+            iokit.IOServiceMatching.restype = vp
+            iokit.IOServiceMatching.argtypes = [ctypes.c_char_p]
+            iokit.IOServiceGetMatchingServices.restype = ctypes.c_int
+            iokit.IOServiceGetMatchingServices.argtypes = [u32, vp, ctypes.POINTER(u32)]
+            iokit.IOIteratorNext.restype = u32
+            iokit.IOIteratorNext.argtypes = [u32]
+            iokit.IOObjectRelease.restype = ctypes.c_int
+            iokit.IOObjectRelease.argtypes = [u32]
+            iokit.IORegistryEntryCreateCFProperty.restype = vp
+            iokit.IORegistryEntryCreateCFProperty.argtypes = [u32, vp, vp, u32]
+            cf.CFStringCreateWithCString.restype = vp
+            cf.CFStringCreateWithCString.argtypes = [vp, ctypes.c_char_p, u32]
+            cf.CFDictionaryGetValue.restype = vp
+            cf.CFDictionaryGetValue.argtypes = [vp, vp]
+            cf.CFNumberGetValue.restype = ctypes.c_bool
+            cf.CFNumberGetValue.argtypes = [vp, ctypes.c_int, vp]
+            cf.CFGetTypeID.restype = ctypes.c_ulong
+            cf.CFGetTypeID.argtypes = [vp]
+            cf.CFNumberGetTypeID.restype = ctypes.c_ulong
+            cf.CFNumberGetTypeID.argtypes = []
+            cf.CFDictionaryGetTypeID.restype = ctypes.c_ulong
+            cf.CFDictionaryGetTypeID.argtypes = []
+            cf.CFRelease.restype = None
+            cf.CFRelease.argtypes = [vp]
+            libc.sysctlbyname.restype = ctypes.c_int
+            libc.sysctlbyname.argtypes = [ctypes.c_char_p, vp,
+                                          ctypes.POINTER(ctypes.c_size_t), vp,
+                                          ctypes.c_size_t]
+            self._iokit, self._cf, self._libc = iokit, cf, libc
+            self._total_mib = self._sysctl_u64(b"hw.memsize") // (1024 * 1024)
+            brand = self._sysctl_str(b"machdep.cpu.brand_string") or "Apple"
+            self._gpu_name = "%s GPU" % brand
+            return True
+        except Exception:
+            self._iokit = self._cf = self._libc = None
+            self._failed = True
+            self._retry_at = time.monotonic() + 30.0
+            return False
+
+    def _sysctl_u64(self, name: bytes) -> int:
+        out = ctypes.c_uint64(0)
+        size = ctypes.c_size_t(ctypes.sizeof(out))
+        if self._libc.sysctlbyname(name, ctypes.byref(out), ctypes.byref(size), None, 0) != 0:
+            return 0
+        return int(out.value)
+
+    def _sysctl_str(self, name: bytes) -> str:
+        size = ctypes.c_size_t(0)
+        if self._libc.sysctlbyname(name, None, ctypes.byref(size), None, 0) != 0 or not size.value:
+            return ""
+        buf = ctypes.create_string_buffer(size.value)
+        if self._libc.sysctlbyname(name, buf, ctypes.byref(size), None, 0) != 0:
+            return ""
+        return buf.value.decode("utf-8", errors="replace").strip()
+
+    def _cfstr(self, text: str) -> Any:
+        return self._cf.CFStringCreateWithCString(None, text.encode("utf-8"), self._KCF_UTF8)
+
+    def _int_of(self, ref: Any) -> Optional[int]:
+        """The integer a CFNumber holds, or None for anything else."""
+        if not ref or self._cf.CFGetTypeID(ref) != self._cf.CFNumberGetTypeID():
+            return None
+        out = ctypes.c_int64(0)
+        if not self._cf.CFNumberGetValue(ref, self._KCF_SINT64, ctypes.byref(out)):
+            return None
+        return int(out.value)
+
+    def _dict_int(self, mapping: Any, key: str) -> Optional[int]:
+        cf_key = self._cfstr(key)
+        try:
+            return self._int_of(self._cf.CFDictionaryGetValue(mapping, cf_key))
+        finally:
+            self._cf.CFRelease(cf_key)
+
+    def _property(self, service: int, key: str) -> Any:
+        """A +1 retained registry property (the caller releases it), or None."""
+        cf_key = self._cfstr(key)
+        try:
+            return self._iokit.IORegistryEntryCreateCFProperty(service, cf_key, None, 0)
+        finally:
+            self._cf.CFRelease(cf_key)
+
+    def _read_stats(self) -> Optional[Dict[str, int]]:
+        """Utilization %, in-use bytes and core count of the first GPU, or None."""
+        iokit, cf = self._iokit, self._cf
+        matching = iokit.IOServiceMatching(b"IOAccelerator")  # consumed by the next call
+        if not matching:
+            return None
+        iterator = ctypes.c_uint32(0)
+        if iokit.IOServiceGetMatchingServices(0, matching, ctypes.byref(iterator)) != 0:
+            return None
+        try:
+            while True:
+                service = iokit.IOIteratorNext(iterator.value)
+                if not service:
+                    return None
+                try:
+                    stats = self._property(service, "PerformanceStatistics")
+                    if not stats:
+                        continue
+                    try:
+                        if cf.CFGetTypeID(stats) != cf.CFDictionaryGetTypeID():
+                            continue
+                        util = self._dict_int(stats, "Device Utilization %")
+                        in_use = self._dict_int(stats, "In use system memory")
+                    finally:
+                        cf.CFRelease(stats)
+                    if util is None or in_use is None:
+                        continue
+                    cores = 0
+                    cores_ref = self._property(service, "gpu-core-count")
+                    if cores_ref:
+                        try:
+                            cores = self._int_of(cores_ref) or 0
+                        finally:
+                            cf.CFRelease(cores_ref)
+                    return {"util": util, "in_use": in_use, "cores": cores}
+                finally:
+                    iokit.IOObjectRelease(service)
+        finally:
+            iokit.IOObjectRelease(iterator.value)
+
+    def _unavailable(self, now: float) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "ok": False, "available": False, "metrics_mode": "unavailable",
+            "device_index": None, "gpu_name": "Unavailable", "gpu_util": 0,
+            "mem_util": 0, "vram_used_mib": 0, "vram_total_mib": 0,
+            "temp_c": 0, "power_w": 0.0,
+        }
+        self._last_ts = now
+        self._last_payload = payload
+        return dict(payload)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a sanitized, path-free GPU telemetry snapshot."""
+        now = time.monotonic()
+        with self._lock:
+            if self._last_payload is not None and (now - self._last_ts) < self._cache_ttl:
+                return dict(self._last_payload)
+            if not self._ensure_libs() or self._total_mib <= 0:
+                return self._unavailable(now)
+            try:
+                stats = self._read_stats()
+            except Exception:
+                stats = None
+            if stats is None:
+                return self._unavailable(now)
+            used_mib = max(0, int(stats["in_use"]) // (1024 * 1024))
+            name = self._gpu_name
+            if stats["cores"] > 0:
+                name = "%s (%d-core)" % (name, stats["cores"])
+            payload = {
+                "ok": True,
+                "available": True,
+                "metrics_mode": "apple_gpu",
+                "device_index": 0,
+                "gpu_name": name,
+                "gpu_util": max(0, min(100, int(stats["util"]))),
+                "mem_util": int(round(100.0 * used_mib / self._total_mib)),
+                "vram_used_mib": used_mib,
+                "vram_total_mib": int(self._total_mib),
+                "temp_c": 0,          # root-only on macOS: not read
+                "power_w": 0.0,       # root-only on macOS: not read
+                "temp_available": False,
+                "power_available": False,
+            }
+            self._last_ts = now
+            self._last_payload = payload
+            return dict(payload)
+
+    def close(self) -> None:
+        """Nothing is held open between reads; present for reader parity."""
+
+
+def _default_reader() -> Any:
+    """NVML everywhere it can exist; IOKit on macOS, where NVML never does."""
+    if sys.platform == "darwin":
+        return AppleGpuReader()
+    return NvmlReader()
+
+
+_DEFAULT_READER = _default_reader()
 atexit.register(_DEFAULT_READER.close)
 
 

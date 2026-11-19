@@ -37,6 +37,7 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Environment :: GPU :: NVIDIA CUDA",
+    "Environment :: GPU :: Apple Metal",
 ]
 
 [project.urls]
