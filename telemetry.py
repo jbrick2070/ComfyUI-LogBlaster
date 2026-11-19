@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import atexit
 import ctypes
-import os
+from os import environ
 import re
 import sys
 import threading
@@ -36,7 +36,7 @@ class _NvmlMemory(ctypes.Structure):
 
 def resolve_nvml_target(env: Optional[Mapping[str, str]] = None) -> Tuple[str, Any]:
     """Classify target NVML GPU selection from LOGBLASTER_NVML_INDEX or CUDA_VISIBLE_DEVICES."""
-    src = env if env is not None else os.environ
+    src = env if env is not None else environ
     explicit = src.get("LOGBLASTER_NVML_INDEX", "").strip()
     if explicit:
         if re.fullmatch(r"\d+", explicit):
