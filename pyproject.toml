@@ -36,8 +36,15 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
-    "Environment :: GPU :: NVIDIA CUDA",
-    "Environment :: GPU :: Apple Metal",
+    # NO ACCELERATOR CLASSIFIER, ON PURPOSE (2026-11-19, the rule OTR adopted
+    # 2026-10-30). The ComfyUI frontend's Manager compares the machine's short
+    # device name ("CUDA", "Metal", "ROCm", "CPU") against the registry's
+    # strings ("GPU :: NVIDIA CUDA") as an exact match -- frontend issue 15364,
+    # fix PR 15468 unmerged, 1.59 has the bug -- so any declared accelerator
+    # marked LogBlaster "Conflicting" on every machine, NVIDIA included. An
+    # empty list is unrestricted. LogBlaster needs no GPU at all (a browser
+    # HUD; telemetry reads NVML on NVIDIA and IOKit on Apple Silicon). Put the
+    # NVIDIA CUDA and Apple Metal classifiers back the day that fix ships.
 ]
 
 [project.urls]

@@ -691,3 +691,14 @@ def test_telemetry_still_spawns_nothing() -> None:
         elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             assert not (node.value.id == "os" and node.attr in ("system", "popen", "spawnv"))
     assert not imported & {"subprocess", "multiprocessing", "pty"}
+
+
+def test_no_accelerator_classifier_while_the_manager_bug_stands() -> None:
+    """The ComfyUI frontend's Manager matches "CUDA"/"Metal" against the
+    registry's "GPU :: NVIDIA CUDA" exactly (frontend issue 15364), so any
+    accelerator classifier marks the pack "Conflicting" on every machine.
+    LogBlaster needs no GPU; an empty list is unrestricted."""
+    import tomllib
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    classifiers = data["project"]["classifiers"]
+    assert not [c for c in classifiers if c.startswith(("Environment :: GPU", "Environment :: NPU"))]
